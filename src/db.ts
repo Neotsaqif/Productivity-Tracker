@@ -344,14 +344,20 @@ let activeClient: DatabaseClient;
 try {
   // Try importing Node 22 database engine synchronously
   const sqlite = requireHelper('node:sqlite');
-  console.log('Successfully loaded node:sqlite. Initializing SQLite Client...');
-  activeClient = new SQLiteDBClient(sqlite.DatabaseSync);
+  if (sqlite && typeof sqlite.DatabaseSync === 'function') {
+    console.log('Successfully loaded node:sqlite. Initializing SQLite Client...');
+    const client = new SQLiteDBClient(sqlite.DatabaseSync);
+    // Initialize inside the try-catch block to handle write/lock or runtime failures
+    client.init();
+    activeClient = client;
+  } else {
+    throw new Error('DatabaseSync is not a function or is unavailable on this Node runtime.');
+  }
 } catch (e) {
-  console.warn('node:sqlite is not fully supported or available on this Node version. Falling back to portable JSON database.');
-  activeClient = new JsonDBClient();
+  console.warn('node:sqlite is not fully supported or failed to initialize. Falling back to resilient portable JSON database.', e);
+  const fallback = new JsonDBClient();
+  fallback.init();
+  activeClient = fallback;
 }
-
-// Initialize the chosen database engine
-activeClient.init();
 
 export const dbStore = activeClient;
