@@ -1,0 +1,6 @@
+{
+  "name": "Personal Productivity Tracker",
+  "description": "A clean, minimal workspace to log tasks, record daily write-ups, and get a realistic, objective AI-driven summary and review of the day's progress.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
