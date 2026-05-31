@@ -3,6 +3,8 @@ import * as path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { dbStore } from './src/db';
 import { GoogleGenAI, Type } from '@google/genai';
+import { resend } from './src/lib/email/resend';
+
 
 const app = express();
 const PORT = 3000;
@@ -222,6 +224,11 @@ app.post('/api/checkin', async (req, res) => {
     // Save check-in log
     const log = await dbStore.saveLog(date, content);
 
+    // Trigger daily check-in email system (non-blocking, async background task)
+    processCheckInEmailFlow(date, content).catch(err => {
+      console.error('Background check-in email dispatch error:', err);
+    });
+
     // Business Logic: Trigger AI Review automatically after log submission
     let aiReview = null;
     let aiError = null;
@@ -414,6 +421,430 @@ ${rawJson.missing.map((m: string) => `- ${m}`).join('\n')}`;
   const savedReview = dbStore.saveReview(date, formattedSummary, score);
   return savedReview;
 }
+
+// ----------------------------------------------------
+// AI DAILY CHECK-IN EMAIL SYSTEM CODES
+// ----------------------------------------------------
+
+// Email format and validation helper
+function validateRecipients(emails: any): string[] {
+  if (!Array.isArray(emails)) return [];
+  const validEmails = new Set<string>();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  
+  for (const email of emails) {
+    if (typeof email === 'string') {
+      const trimmed = email.trim();
+      if (trimmed && emailRegex.test(trimmed)) {
+        validEmails.add(trimmed);
+      }
+    }
+  }
+  
+  return Array.from(validEmails).slice(0, 10);
+}
+
+// AI email report builder
+async function generateEmailReport(date: string, logContent: string) {
+  try {
+    const ai = getGeminiClient();
+    
+    // Retrieve verifiable tracked activities for context
+    const allAchievements = await dbStore.getAchievements();
+    const allActivities = await dbStore.getActivities();
+
+    const dayAchievements = allAchievements.filter(ach => ach.createdAt.startsWith(date));
+    const dayActivities = allActivities.filter(act => act.createdAt.startsWith(date));
+
+    const completedTasks = dayActivities.filter(act => act.type === 'task_completed');
+    const completedRoadmapSteps = dayActivities.filter(act => act.type === 'roadmap_step_completed');
+
+    const achievementsStr = dayAchievements.map(a => `- ${a.text}`).join('\n') || 'None';
+    const tasksStr = completedTasks.map(t => `- ${t.title}`).join('\n') || 'None';
+    const stepsStr = completedRoadmapSteps.map(s => `- ${s.title}`).join('\n') || 'None';
+
+    const prompt = `You are a strict, objective, and neutral productivity coach.
+Analyze the user's progress for today (${date}) and outline a motivating, structured daily email progress report.
+Contrast the user's check-in log with the system verified raw evidence:
+- Verifiable Tasks completed:
+${tasksStr}
+- Verifiable Roadmap steps completed:
+${stepsStr}
+- Accomplishments unlocked:
+${achievementsStr}
+
+User's log content: "${logContent}"
+
+Tone: Motivational but honest (no fake praise, call out gaps/unsubstantiated claims, and focus on progress/discipline).
+Your output must be returned as valid structured JSON according to the schema.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            subject: {
+              type: Type.STRING,
+              description: 'An engaging, motivational subject line for the progress email report.'
+            },
+            summary: {
+              type: Type.STRING,
+              description: 'A brief 2-3 sentence overview of today\'s efforts, showing realistic evaluation.'
+            },
+            wins: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'List of verifiable key achievements and completed items today.'
+            },
+            improvements: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Constructive suggestions for improvement, highlighting gaps between logs and verified activities.'
+            },
+            score: {
+              type: Type.INTEGER,
+              description: 'A productivity rating from 1 to 10 based on accomplishments.'
+            },
+            motivational_message: {
+              type: Type.STRING,
+              description: 'A candid, encouraging coach commentary about building consistency.'
+            },
+            tomorrow_focus: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Tactical next focus tasks for tomorrow.'
+            }
+          },
+          required: ['subject', 'summary', 'wins', 'improvements', 'score', 'motivational_message', 'tomorrow_focus']
+        }
+      }
+    });
+
+    if (!response.text) {
+      throw new Error('Received empty response from Gemini API.');
+    }
+
+    const report = JSON.parse(response.text.trim());
+    return report;
+  } catch (err: any) {
+    console.error('Error generating AI email report, leveraging fallback:', err.message);
+    return {
+      subject: `Daily Progress Report for ${date}`,
+      summary: `Check-in details submitted successfully. Log writeup says: "${logContent}"`,
+      wins: ['User successfully submitted manual daily check-in log.'],
+      improvements: ['Verify that automated AI integrations are fully configured.'],
+      score: 5,
+      motivational_message: 'Keep showing up! Logging your days is a powerful ritual of discipline. Keep logging consistent progress to build long term momentum.',
+      tomorrow_focus: ['Review daily goals', 'Continue habits check-in loop']
+    };
+  }
+}
+
+// Background handler
+async function processCheckInEmailFlow(date: string, logContent: string) {
+  try {
+    const settings = await dbStore.getSettings('email_recipients');
+    if (!settings || !settings.value || settings.value.length === 0) {
+      console.log('Daily check-in email system skipped: No recipients configured.');
+      return;
+    }
+
+    const validatedRecipients = validateRecipients(settings.value);
+    if (validatedRecipients.length === 0) {
+      console.log('Daily check-in email system skipped: No valid recipients found.');
+      return;
+    }
+
+    console.log(`Daily check-in email system started. Recipients: [${validatedRecipients.join(', ')}]`);
+
+    const report = await generateEmailReport(date, logContent);
+
+    const score = report.score ?? 5;
+    const summary = report.summary ?? '';
+    const wins = report.wins ?? [];
+    const improvements = report.improvements ?? [];
+    const coachMessage = report.motivational_message ?? '';
+    const tomorrowFocus = report.tomorrow_focus ?? [];
+
+    const winsHtml = wins.map((w: string) => `<li>${w}</li>`).join('\n');
+    const improvementsHtml = improvements.map((i: string) => `<li>${i}</li>`).join('\n');
+    const tomorrowFocusHtml = tomorrowFocus.map((tf: string) => `<li>${tf}</li>`).join('\n');
+
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<body style="font-family: sans-serif; padding: 20px;">
+  <h2>Daily Progress Report - Score: ${score}/10</h2>
+  <p><strong>Summary:</strong> ${summary}</p>
+  <h3>Wins Today</h3>
+  <ul>
+    ${winsHtml || '<li>None recorded</li>'}
+  </ul>
+  <h3>Areas of Improvement</h3>
+  <ul>
+    ${improvementsHtml || '<li>Keep working consistently</li>'}
+  </ul>
+  <p><strong>Coach's Message:</strong> ${coachMessage}</p>
+  <h3>Tomorrow's Focus</h3>
+  <ul>
+    ${tomorrowFocusHtml || '<li>Review daily routine</li>'}
+  </ul>
+</body>
+</html>`;
+
+    const textContent = `Daily Progress Report - Score: ${score}/10\n\n` +
+      `Summary: ${summary}\n\n` +
+      `Wins Today:\n${wins.map((w: string) => `- ${w}`).join('\n') || 'None'}\n\n` +
+      `Areas of Improvement:\n${improvements.map((i: string) => `- ${i}`).join('\n') || 'None'}\n\n` +
+      `Coach's Message: ${coachMessage}\n\n` +
+      `Tomorrow's Focus:\n${tomorrowFocus.map((tf: string) => `- ${tf}`).join('\n') || 'None'}`;
+
+    try {
+      if (!process.env.RESEND_API_KEY) {
+        throw new Error('RESEND_API_KEY environment variable is not configured. Please define RESEND_API_KEY in environment secrets.');
+      }
+      
+      const EMAIL_FROM = process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
+      const failedToSend: string[] = [];
+      const errors: string[] = [];
+
+      for (const recipient of validatedRecipients) {
+        try {
+          await resend.emails.send({
+            from: EMAIL_FROM,
+            to: recipient,
+            subject: report.subject || `Progress Report for ${date}`,
+            html: htmlContent,
+            text: textContent
+          });
+          console.log(`Daily check-in email sent successfully to ${recipient}.`);
+        } catch (sendErr: any) {
+          console.error(`Resend send failed for ${recipient}. Error: ${sendErr.message}`);
+          failedToSend.push(recipient);
+          errors.push(`${recipient}: ${sendErr.message}`);
+        }
+      }
+
+      if (failedToSend.length > 0) {
+        await dbStore.createFailedEmail(
+          failedToSend,
+          report.subject || `Progress Report for ${date}`,
+          htmlContent,
+          textContent,
+          errors.join('; ')
+        );
+      } else {
+        console.log('Daily check-in email sent successfully via Resend API.');
+      }
+    } catch (sendErr: any) {
+      console.error('Resend transaction failed: storing in queue. Error:', sendErr.message);
+      await dbStore.createFailedEmail(
+        validatedRecipients,
+        report.subject || `Progress Report for ${date}`,
+        htmlContent,
+        textContent,
+        sendErr.message
+      );
+    }
+  } catch (err: any) {
+    console.error('Fatal failure in daily check-in email processor:', err.message);
+  }
+}
+
+// GET /api/settings/email-recipients
+app.get('/api/settings/email-recipients', async (req, res) => {
+  try {
+    const settings = await dbStore.getSettings('email_recipients');
+    res.json({ recipients: settings?.value || [] });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/settings/email-recipients
+app.post('/api/settings/email-recipients', async (req, res) => {
+  try {
+    const { recipients } = req.body;
+    if (!Array.isArray(recipients)) {
+      return res.status(400).json({ error: 'Recipients must be an array of email strings' });
+    }
+    const validated = validateRecipients(recipients);
+    const updated = await dbStore.saveSettings('email_recipients', validated);
+    res.json({ success: true, recipients: updated.value });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/email/failed
+app.get('/api/email/failed', async (req, res) => {
+  try {
+    const emails = await dbStore.getFailedEmails();
+    res.json(emails);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/email/retry
+app.post('/api/email/retry', async (req, res) => {
+  try {
+    const failedEmails = await dbStore.getFailedEmails();
+    const pending = failedEmails.filter(e => e.status === 'pending');
+    
+    let successCount = 0;
+    let failedCount = 0;
+    
+    if (pending.length > 0 && !process.env.RESEND_API_KEY) {
+      throw new Error('RESEND_API_KEY environment variable is not configured. Please define RESEND_API_KEY in environment secrets.');
+    }
+    
+    const EMAIL_FROM = process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
+    
+    for (const email of pending) {
+      try {
+        const failedRecipients: string[] = [];
+        const errors: string[] = [];
+        
+        for (const recipient of email.to) {
+          try {
+            await resend.emails.send({
+              from: EMAIL_FROM,
+              to: recipient,
+              subject: email.subject,
+              html: email.htmlContent,
+              text: email.textContent
+            });
+          } catch (err: any) {
+            failedRecipients.push(recipient);
+            errors.push(`${recipient}: ${err.message}`);
+          }
+        }
+        
+        if (failedRecipients.length === 0) {
+          await dbStore.updateFailedEmail(email.id, 'sent' as any, email.retryCount, '');
+          successCount++;
+        } else {
+          const newCount = email.retryCount + 1;
+          const newStatus = newCount >= 3 ? 'failed' : 'pending';
+          await dbStore.updateFailedEmail(email.id, newStatus, newCount, errors.join('; '));
+          failedCount++;
+        }
+      } catch (err: any) {
+        const newCount = email.retryCount + 1;
+        const newStatus = newCount >= 3 ? 'failed' : 'pending';
+        await dbStore.updateFailedEmail(email.id, newStatus, newCount, err.message);
+        failedCount++;
+      }
+    }
+    
+    res.json({
+      success: true,
+      processed: pending.length,
+      successCount,
+      failedCount
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/email/test
+app.post('/api/email/test', async (req, res) => {
+  try {
+    const settings = await dbStore.getSettings('email_recipients');
+    if (!settings || !settings.value || settings.value.length === 0) {
+      return res.status(400).json({ error: 'No recipient emails configured. Please add at least one email address to the recipient list first.' });
+    }
+
+    const validatedRecipients = validateRecipients(settings.value);
+    if (validatedRecipients.length === 0) {
+      return res.status(400).json({ error: 'No valid recipient email addresses found in your configuration.' });
+    }
+
+    if (!process.env.RESEND_API_KEY) {
+      return res.status(400).json({ error: 'RESEND_API_KEY environment variable is not configured. Please define RESEND_API_KEY in environment secrets.' });
+    }
+
+    const testSubject = 'AI Progress Email System - Diagnostic Resend API Test';
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<body style="font-family: sans-serif; padding: 20px; background-color: #f8fafc; color: #0f172a;">
+  <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 4px solid #0f172a; padding: 24px; box-shadow: 6px 6px 0px 0px rgba(15,23,42,1);">
+    <h1 style="font-size: 20px; font-weight: 900; margin-top: 0; text-transform: uppercase; color: #4f46e5; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px;">
+      Diagnostic Resend API Connection Test
+    </h1>
+    <p style="font-size: 14px; font-weight: 700; line-height: 1.6;">
+      Congratulations! Your Resend API integration is working perfectly.
+    </p>
+    <p style="font-size: 12px; font-weight: 600; color: #475569; background-color: #f1f5f9; padding: 12px; border-left: 4px solid #4f46e5; font-family: monospace;">
+      Provider: Resend Email API<br>
+      From Address: ${process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>"}<br>
+      Timestamp: ${new Date().toISOString()}
+    </p>
+    <p style="font-size: 13px; font-weight: 500; color: #334155;">
+      You will now receive automated summaries generated by Google Gemini AI directly to this inbox whenever you submit a check-in page log!
+    </p>
+    <div style="text-align: center; margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 16px;">
+      <span style="font-size: 10px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; color: #64748b;">
+        AI Daily Check-In Companion System
+      </span>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    const textContent = `AI Progress Email System - Diagnostic Resend API Test\n\n` +
+      `Congratulations! Your Resend API integration is working perfectly.\n\n` +
+      `Diagnostic Details:\n` +
+      `- Provider: Resend Email API\n` +
+      `- From Address: ${process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>"}\n` +
+      `- Time: ${new Date().toISOString()}\n\n` +
+      `You will now receive automated summaries generated by Google Gemini AI directly to this inbox whenever you submit a check-in page log!`;
+
+    const EMAIL_FROM = process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
+    
+    const failedToSend: string[] = [];
+    const errors: string[] = [];
+
+    for (const recipient of validatedRecipients) {
+      try {
+        await resend.emails.send({
+          from: EMAIL_FROM,
+          to: recipient,
+          subject: testSubject,
+          html: htmlContent,
+          text: textContent
+        });
+      } catch (err: any) {
+        failedToSend.push(recipient);
+        errors.push(`${recipient}: ${err.message}`);
+      }
+    }
+
+    if (failedToSend.length > 0) {
+      throw new Error(`Failed to send to some recipients: ${errors.join(', ')}`);
+    }
+
+    res.json({ success: true, message: `Diagnostic Resend API test email sent successfully to: ${validatedRecipients.join(', ')}!` });
+  } catch (error: any) {
+    // Write failed attempt to queue for review
+    const settings = await dbStore.getSettings('email_recipients').catch(() => null);
+    const recipients = settings?.value || ['unknown@test.com'];
+    await dbStore.createFailedEmail(
+      recipients,
+      'Diagnostic Resend Test (Failed)',
+      'Resend Diagnostic failed to execute',
+      'Resend Diagnostic failed to execute',
+      error.message
+    ).catch(err => console.error('Failed to log failed email test error:', err));
+
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // ----------------------------------------------------
 // BOOTSTRAP EXTRAS & VITE MIDDLEWARE

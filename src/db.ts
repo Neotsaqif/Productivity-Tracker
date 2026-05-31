@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'module';
-import { Task, DailyLog, AIReview, Achievement, RoadmapGroup, RoadmapProject, RoadmapTask, Activity } from './types';
+import { Task, DailyLog, AIReview, Achievement, RoadmapGroup, RoadmapProject, RoadmapTask, Activity, Settings, FailedEmail } from './types';
 
 const requireHelper = createRequire(path.join(process.cwd(), 'dummy.js'));
 
@@ -34,6 +34,13 @@ interface DatabaseClient {
   createRoadmapTask(projectId: string, title: string, type: 'learn' | 'project'): Promise<RoadmapTask>;
   toggleRoadmapTask(id: string, completed?: boolean): Promise<RoadmapTask | null>;
   completeRoadmapProject(id: string): Promise<RoadmapProject | null>;
+
+  // Settings & Failed Email methods
+  getSettings(key: string): Promise<Settings | null>;
+  saveSettings(key: string, value: string[]): Promise<Settings>;
+  getFailedEmails(): Promise<FailedEmail[]>;
+  createFailedEmail(to: string[], subject: string, htmlContent: string, textContent: string, error: string): Promise<FailedEmail>;
+  updateFailedEmail(id: string, status: 'pending' | 'retrying' | 'failed', retryCount: number, error: string): Promise<FailedEmail | null>;
 }
 
 // ----------------------------------------------------
@@ -49,6 +56,8 @@ class JsonDBClient implements DatabaseClient {
     roadmap_projects: RoadmapProject[];
     roadmap_tasks: RoadmapTask[];
     roadmap_groups: RoadmapGroup[];
+    settings?: Settings[];
+    failed_emails?: FailedEmail[];
   } = {
     tasks: [],
     daily_logs: [],
@@ -57,6 +66,8 @@ class JsonDBClient implements DatabaseClient {
     activities: [],
     roadmap_projects: [],
     roadmap_tasks: [],
+    settings: [],
+    failed_emails: [],
     roadmap_groups: [
       { id: 'ai', name: 'AI' },
       { id: 'fitness', name: 'Fitness' },
@@ -78,6 +89,8 @@ class JsonDBClient implements DatabaseClient {
         this.data.roadmap_projects = this.data.roadmap_projects || [];
         this.data.roadmap_tasks = this.data.roadmap_tasks || [];
         this.data.roadmap_groups = this.data.roadmap_groups || [];
+        this.data.settings = this.data.settings || [];
+        this.data.failed_emails = this.data.failed_emails || [];
 
         // Check if groups are empty or need default seed
         if (this.data.roadmap_groups.length === 0) {
@@ -337,6 +350,62 @@ class JsonDBClient implements DatabaseClient {
     this.save();
     return project;
   }
+
+  async getSettings(key: string): Promise<Settings | null> {
+    this.data.settings = this.data.settings || [];
+    const item = this.data.settings.find(s => s.key === key);
+    return item || null;
+  }
+
+  async saveSettings(key: string, value: string[]): Promise<Settings> {
+    this.data.settings = this.data.settings || [];
+    let item = this.data.settings.find(s => s.key === key);
+    if (item) {
+      item.value = value;
+    } else {
+      item = {
+        id: 'sett_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+        key,
+        value
+      };
+      this.data.settings.push(item);
+    }
+    this.save();
+    return item;
+  }
+
+  async getFailedEmails(): Promise<FailedEmail[]> {
+    return this.data.failed_emails || [];
+  }
+
+  async createFailedEmail(to: string[], subject: string, htmlContent: string, textContent: string, error: string): Promise<FailedEmail> {
+    this.data.failed_emails = this.data.failed_emails || [];
+    const newMail: FailedEmail = {
+      id: 'err_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+      to,
+      subject,
+      htmlContent,
+      textContent,
+      error,
+      status: 'pending',
+      retryCount: 0,
+      createdAt: new Date().toISOString()
+    };
+    this.data.failed_emails.push(newMail);
+    this.save();
+    return newMail;
+  }
+
+  async updateFailedEmail(id: string, status: 'pending' | 'retrying' | 'failed', retryCount: number, error: string): Promise<FailedEmail | null> {
+    this.data.failed_emails = this.data.failed_emails || [];
+    const item = this.data.failed_emails.find(m => m.id === id);
+    if (!item) return null;
+    item.status = status;
+    item.retryCount = retryCount;
+    item.error = error;
+    this.save();
+    return item;
+  }
 }
 
 // ----------------------------------------------------
@@ -428,6 +497,28 @@ class SQLiteDBClient implements DatabaseClient {
         type TEXT NOT NULL DEFAULT 'learn',
         completed INTEGER NOT NULL DEFAULT 0,
         completedAt TEXT,
+        createdAt TEXT NOT NULL
+      );
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        id TEXT PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        value TEXT NOT NULL
+      );
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS failed_email_queue (
+        id TEXT PRIMARY KEY,
+        recipient_to TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        htmlContent TEXT NOT NULL,
+        textContent TEXT NOT NULL,
+        error TEXT NOT NULL,
+        status TEXT NOT NULL,
+        retryCount INTEGER NOT NULL,
         createdAt TEXT NOT NULL
       );
     `);
@@ -796,6 +887,98 @@ class SQLiteDBClient implements DatabaseClient {
       createdAt: project.createdAt,
     };
   }
+
+  async getSettings(key: string): Promise<Settings | null> {
+    const stmt = this.db.prepare('SELECT id, key, value FROM settings WHERE key = ? LIMIT 1');
+    const row = stmt.get(key);
+    if (!row) return null;
+    return {
+      id: row.id,
+      key: row.key,
+      value: JSON.parse(row.value)
+    };
+  }
+
+  async saveSettings(key: string, value: string[]): Promise<Settings> {
+    const existing = await this.getSettings(key);
+    const valueStr = JSON.stringify(value);
+    if (existing) {
+      const stmt = this.db.prepare('UPDATE settings SET value = ? WHERE key = ?');
+      stmt.run(valueStr, key);
+      return {
+        id: existing.id,
+        key,
+        value
+      };
+    } else {
+      const id = 'sett_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+      const stmt = this.db.prepare('INSERT INTO settings (id, key, value) VALUES (?, ?, ?)');
+      stmt.run(id, key, valueStr);
+      return {
+        id,
+        key,
+        value
+      };
+    }
+  }
+
+  async getFailedEmails(): Promise<FailedEmail[]> {
+    const stmt = this.db.prepare('SELECT id, recipient_to, subject, htmlContent, textContent, error, status, retryCount, createdAt FROM failed_email_queue ORDER BY createdAt DESC');
+    const rows = stmt.all();
+    return rows.map((row: any) => ({
+      id: row.id,
+      to: JSON.parse(row.recipient_to),
+      subject: row.subject,
+      htmlContent: row.htmlContent,
+      textContent: row.textContent,
+      error: row.error,
+      status: row.status,
+      retryCount: row.retryCount,
+      createdAt: row.createdAt
+    }));
+  }
+
+  async createFailedEmail(to: string[], subject: string, htmlContent: string, textContent: string, error: string): Promise<FailedEmail> {
+    const id = 'err_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    const createdAt = new Date().toISOString();
+    const recipientToStr = JSON.stringify(to);
+    const retryCount = 0;
+    const status = 'pending';
+    const stmt = this.db.prepare('INSERT INTO failed_email_queue (id, recipient_to, subject, htmlContent, textContent, error, status, retryCount, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    stmt.run(id, recipientToStr, subject, htmlContent, textContent, error, status, retryCount, createdAt);
+    return {
+      id,
+      to,
+      subject,
+      htmlContent,
+      textContent,
+      error,
+      status,
+      retryCount,
+      createdAt
+    };
+  }
+
+  async updateFailedEmail(id: string, status: 'pending' | 'retrying' | 'failed', retryCount: number, error: string): Promise<FailedEmail | null> {
+    const checkStmt = this.db.prepare('SELECT id, recipient_to, subject, htmlContent, textContent, error, status, retryCount, createdAt FROM failed_email_queue WHERE id = ? LIMIT 1');
+    const row = checkStmt.get(id);
+    if (!row) return null;
+
+    const updateStmt = this.db.prepare('UPDATE failed_email_queue SET status = ?, retryCount = ?, error = ? WHERE id = ?');
+    updateStmt.run(status, retryCount, error, id);
+
+    return {
+      id,
+      to: JSON.parse(row.recipient_to),
+      subject: row.subject,
+      htmlContent: row.htmlContent,
+      textContent: row.textContent,
+      error,
+      status,
+      retryCount,
+      createdAt: row.createdAt
+    };
+  }
 }
 
 // ----------------------------------------------------
@@ -916,6 +1099,28 @@ class MySQLDBClient implements DatabaseClient {
         type VARCHAR(255) NOT NULL DEFAULT 'learn',
         completed TINYINT(1) NOT NULL DEFAULT 0,
         completedAt VARCHAR(255),
+        createdAt VARCHAR(255) NOT NULL
+      ) ENGINE=InnoDB;
+    `);
+
+    await this.pool.execute(`
+      CREATE TABLE IF NOT EXISTS settings (
+        id VARCHAR(255) PRIMARY KEY,
+        \`key\` VARCHAR(255) UNIQUE NOT NULL,
+        value TEXT NOT NULL
+      ) ENGINE=InnoDB;
+    `);
+
+    await this.pool.execute(`
+      CREATE TABLE IF NOT EXISTS failed_email_queue (
+        id VARCHAR(255) PRIMARY KEY,
+        recipient_to TEXT NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        htmlContent TEXT NOT NULL,
+        textContent TEXT NOT NULL,
+        error TEXT NOT NULL,
+        status VARCHAR(255) NOT NULL,
+        retryCount INT NOT NULL,
         createdAt VARCHAR(255) NOT NULL
       ) ENGINE=InnoDB;
     `);
@@ -1269,6 +1474,94 @@ class MySQLDBClient implements DatabaseClient {
       createdAt: project.createdAt,
     };
   }
+
+  async getSettings(key: string): Promise<Settings | null> {
+    const [rows]: any = await this.pool.execute('SELECT id, `key`, value FROM settings WHERE `key` = ? LIMIT 1', [key]);
+    if (!rows || rows.length === 0) return null;
+    const row = rows[0];
+    return {
+      id: row.id,
+      key: row.key,
+      value: JSON.parse(row.value)
+    };
+  }
+
+  async saveSettings(key: string, value: string[]): Promise<Settings> {
+    const existing = await this.getSettings(key);
+    const valueStr = JSON.stringify(value);
+    if (existing) {
+      await this.pool.execute('UPDATE settings SET value = ? WHERE `key` = ?', [valueStr, key]);
+      return {
+        id: existing.id,
+        key,
+        value
+      };
+    } else {
+      const id = 'sett_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+      await this.pool.execute('INSERT INTO settings (id, `key`, value) VALUES (?, ?, ?)', [id, key, valueStr]);
+      return {
+        id,
+        key,
+        value
+      };
+    }
+  }
+
+  async getFailedEmails(): Promise<FailedEmail[]> {
+    const [rows]: any = await this.pool.execute('SELECT id, recipient_to, subject, htmlContent, textContent, error, status, retryCount, createdAt FROM failed_email_queue ORDER BY createdAt DESC');
+    if (!rows) return [];
+    return rows.map((row: any) => ({
+      id: row.id,
+      to: JSON.parse(row.recipient_to),
+      subject: row.subject,
+      htmlContent: row.htmlContent,
+      textContent: row.textContent,
+      error: row.error,
+      status: row.status,
+      retryCount: row.retryCount,
+      createdAt: row.createdAt
+    }));
+  }
+
+  async createFailedEmail(to: string[], subject: string, htmlContent: string, textContent: string, error: string): Promise<FailedEmail> {
+    const id = 'err_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    const createdAt = new Date().toISOString();
+    const recipientToStr = JSON.stringify(to);
+    const retryCount = 0;
+    const status = 'pending';
+    await this.pool.execute('INSERT INTO failed_email_queue (id, recipient_to, subject, htmlContent, textContent, error, status, retryCount, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, recipientToStr, subject, htmlContent, textContent, error, status, retryCount, createdAt]);
+    return {
+      id,
+      to,
+      subject,
+      htmlContent,
+      textContent,
+      error,
+      status,
+      retryCount,
+      createdAt
+    };
+  }
+
+  async updateFailedEmail(id: string, status: 'pending' | 'retrying' | 'failed', retryCount: number, error: string): Promise<FailedEmail | null> {
+    const [rows]: any = await this.pool.execute('SELECT id, recipient_to, subject, htmlContent, textContent, error, status, retryCount, createdAt FROM failed_email_queue WHERE id = ? LIMIT 1', [id]);
+    if (!rows || rows.length === 0) return null;
+    const row = rows[0];
+
+    await this.pool.execute('UPDATE failed_email_queue SET status = ?, retryCount = ?, error = ? WHERE id = ?', [status, retryCount, error, id]);
+
+    return {
+      id,
+      to: JSON.parse(row.recipient_to),
+      subject: row.subject,
+      htmlContent: row.htmlContent,
+      textContent: row.textContent,
+      error,
+      status,
+      retryCount,
+      createdAt: row.createdAt
+    };
+  }
 }
 
 // ----------------------------------------------------
@@ -1426,6 +1719,16 @@ export class DelegatingDBClient implements DatabaseClient {
   }
   async completeRoadmapProject(id: string) {
     return this.activeClient.completeRoadmapProject(id);
+  }
+
+  async getSettings(key: string) { return this.activeClient.getSettings(key); }
+  async saveSettings(key: string, value: string[]) { return this.activeClient.saveSettings(key, value); }
+  async getFailedEmails() { return this.activeClient.getFailedEmails(); }
+  async createFailedEmail(to: string[], subject: string, htmlContent: string, textContent: string, error: string) {
+    return this.activeClient.createFailedEmail(to, subject, htmlContent, textContent, error);
+  }
+  async updateFailedEmail(id: string, status: 'pending' | 'retrying' | 'failed', retryCount: number, error: string) {
+    return this.activeClient.updateFailedEmail(id, status, retryCount, error);
   }
 }
 

@@ -81,3 +81,21 @@ export interface RoadmapTask {
   createdAt: string;
 }
 
+export interface Settings {
+  id: string;
+  key: string;
+  value: string[];
+}
+
+export interface FailedEmail {
+  id: string;
+  to: string[];
+  subject: string;
+  htmlContent: string;
+  textContent: string;
+  error: string;
+  status: 'pending' | 'retrying' | 'failed';
+  retryCount: number;
+  createdAt: string;
+}
+

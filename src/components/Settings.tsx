@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, ShieldCheck, HelpCircle, HardDrive, RefreshCw, Layers, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Database, ShieldCheck, HelpCircle, HardDrive, RefreshCw, Layers, CheckCircle2, AlertTriangle, Sparkles } from 'lucide-react';
 
 interface DBConfig {
   host?: string;
@@ -29,10 +29,151 @@ export function Settings({ onRefresh }: SettingsProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Load current database configurations on mount
+  // Email System State
+  const [recipients, setRecipients] = useState<string[]>([]);
+  const [newEmail, setNewEmail] = useState('');
+  const [failedEmails, setFailedEmails] = useState<any[]>([]);
+  const [emailStatusMessage, setEmailStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [isSavingRecipients, setIsSavingRecipients] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+
+  // Load current database configurations & email settings on mount
   useEffect(() => {
     fetchConfig();
+    fetchEmailSettings();
+    fetchFailedEmails();
   }, []);
+
+  const fetchEmailSettings = async () => {
+    try {
+      const res = await fetch('/api/settings/email-recipients');
+      if (res.ok) {
+        const data = await res.json();
+        setRecipients(data.recipients || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch email settings:', err);
+    }
+  };
+
+  const fetchFailedEmails = async () => {
+    try {
+      const res = await fetch('/api/email/failed');
+      if (res.ok) {
+        const data = await res.json();
+        setFailedEmails(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch failed emails:', err);
+    }
+  };
+
+  const handleAddEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = newEmail.trim();
+    if (!email) return;
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setEmailStatusMessage({ type: 'error', text: 'Invalid email address format.' });
+      return;
+    }
+
+    if (recipients.includes(email)) {
+      setEmailStatusMessage({ type: 'error', text: 'This recipient email is already in the list.' });
+      return;
+    }
+
+    if (recipients.length >= 10) {
+      setEmailStatusMessage({ type: 'error', text: 'You can have a maximum of 10 recipients.' });
+      return;
+    }
+
+    const updated = [...recipients, email];
+    await saveRecipientsList(updated);
+  };
+
+  const handleRemoveEmail = async (emailToRemove: string) => {
+    const updated = recipients.filter(r => r !== emailToRemove);
+    await saveRecipientsList(updated);
+  };
+
+  const saveRecipientsList = async (list: string[]) => {
+    setIsSavingRecipients(true);
+    setEmailStatusMessage(null);
+    try {
+      const res = await fetch('/api/settings/email-recipients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients: list })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRecipients(data.recipients || []);
+        setNewEmail('');
+        setEmailStatusMessage({ type: 'success', text: 'Recipient list updated successfully!' });
+      } else {
+        const data = await res.json();
+        setEmailStatusMessage({ type: 'error', text: data.error || 'Failed to update recipient list.' });
+      }
+    } catch (err: any) {
+      setEmailStatusMessage({ type: 'error', text: 'Network error saving recipients: ' + err.message });
+    } finally {
+      setIsSavingRecipients(false);
+    }
+  };
+
+  const handleRetryEmails = async () => {
+    setIsRetrying(true);
+    setEmailStatusMessage(null);
+    try {
+      const res = await fetch('/api/email/retry', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        await fetchFailedEmails();
+        setEmailStatusMessage({
+          type: 'success',
+          text: `Retry completed. Processed: ${data.processed}, Sent successfully: ${data.successCount}, Remained failed: ${data.failedCount}.`
+        });
+      } else {
+        setEmailStatusMessage({ type: 'error', text: 'Failed to process email retries.' });
+      }
+    } catch (err: any) {
+      setEmailStatusMessage({ type: 'error', text: 'Error executing retry loop: ' + err.message });
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  const handleTestEmail = async () => {
+    setIsTesting(true);
+    setEmailStatusMessage(null);
+    try {
+      const res = await fetch('/api/email/test', { method: 'POST' });
+      const data = await res.json();
+      await fetchFailedEmails();
+      if (res.ok) {
+        setEmailStatusMessage({
+          type: 'success',
+          text: data.message || 'Diagnostic Resend API test email dispatched successfully!'
+        });
+      } else {
+        setEmailStatusMessage({
+          type: 'error',
+          text: data.error || 'Failed to dispatch diagnostic Resend API test email.'
+        });
+      }
+    } catch (err: any) {
+      await fetchFailedEmails();
+      setEmailStatusMessage({
+        type: 'error',
+        text: 'Error calling test endpoint: ' + err.message
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const fetchConfig = async () => {
     setIsLoading(true);
@@ -458,6 +599,200 @@ export function Settings({ onRefresh }: SettingsProps) {
         </div>
 
       </div>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* AI DAILY CHECK-IN EMAIL SYSTEM PANEL */}
+      {/* ----------------------------------------------------------------- */}
+      <div className="border-4 border-slate-900 bg-white p-6 md:p-8 shadow-[6px_6px_0px_0px_rgba(15,23,42,1)] space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] uppercase font-black tracking-[0.2em] text-indigo-800">
+                Automated Operations
+              </span>
+            </div>
+            <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">
+              AI Progress Email Reports
+            </h2>
+            <p className="text-xs md:text-sm font-semibold text-slate-600 max-w-xl mt-1 leading-relaxed">
+              Automatically compile and dispatch daily AI productivity audit reports right to your recipients' inboxes using the Resend API immediately following each of your check-ins.
+            </p>
+          </div>
+          <div className="flex-shrink-0">
+            <button
+              type="button"
+              onClick={handleTestEmail}
+              disabled={isTesting || recipients.length === 0}
+              className="px-4 py-2.5 bg-indigo-600 text-white border-2 border-slate-900 text-xs font-black uppercase tracking-wider hover:bg-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 transition-all cursor-pointer shadow-[4px_4px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none flex items-center gap-2"
+              title={recipients.length === 0 ? "Please add at least one recipient email below first" : "Trigger diagnostic Resend API delivery check"}
+            >
+              {isTesting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  Testing Resend...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  Test Email (Resend API)
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {emailStatusMessage && (
+          <div
+            className={`border-3 p-4 flex gap-4 ${
+              emailStatusMessage.type === 'success'
+                ? 'bg-emerald-50 border-emerald-950 border-emerald-900 text-emerald-950 shadow-[4px_4px_0px_0px_rgba(16,185,129,1)]'
+                : 'bg-rose-50 border-rose-950 border-rose-900 text-rose-950 shadow-[4px_4px_0px_0px_rgba(244,63,94,1)]'
+            }`}
+          >
+            <div className="space-y-1">
+              <span className="text-xs font-black uppercase tracking-wider block">
+                {emailStatusMessage.type === 'success' ? 'Email system notification' : 'Email system alert'}
+              </span>
+              <p className="text-xs font-bold">{emailStatusMessage.text}</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          
+          {/* Recipient manager */}
+          <div className="space-y-4">
+            <div className="border-b-2 border-slate-100 pb-3 flex justify-between items-center">
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-tight text-slate-900">
+                  Recipient Subscription List
+                </h3>
+                <p className="text-[10px] font-bold text-slate-400">
+                  Add up to 10 verified recipient emails for automatic reporting:
+                </p>
+              </div>
+              <span className="bg-indigo-100 text-indigo-900 text-[10px] font-black border-2 border-indigo-900 px-2 py-0.5 shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]">
+                {recipients.length} / 10
+              </span>
+            </div>
+
+            {/* Email form */}
+            <form onSubmit={handleAddEmail} className="flex gap-2">
+              <input
+                type="email"
+                placeholder="coachee@example.com"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                disabled={isSavingRecipients || recipients.length >= 10}
+                className="flex-1 px-3 py-2 border-2 border-slate-900 text-xs font-bold bg-slate-50 focus:bg-white focus:outline-none placeholder-slate-400 disabled:bg-slate-100"
+              />
+              <button
+                type="submit"
+                disabled={isSavingRecipients || recipients.length >= 10 || !newEmail.trim()}
+                className="px-4 py-2 bg-indigo-600 text-white border-2 border-slate-900 text-xs font-black uppercase hover:bg-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 transition-all cursor-pointer shadow-[2px_2px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none"
+              >
+                Add
+              </button>
+            </form>
+
+            {/* Recipients list */}
+            {recipients.length === 0 ? (
+              <div className="text-center py-6 border-2 border-dashed border-slate-200">
+                <p className="text-xs font-bold text-slate-400">No recipients configured. Periodic email reports will be skipped.</p>
+              </div>
+            ) : (
+              <div className="border-2 border-slate-900 divide-y-2 divide-slate-200 h-64 overflow-y-auto">
+                {recipients.map((email) => (
+                  <div key={email} className="flex items-center justify-between p-3 bg-slate-50/50 hover:bg-slate-50">
+                    <span className="text-xs font-bold text-slate-800">{email}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveEmail(email)}
+                      disabled={isSavingRecipients}
+                      className="px-2 py-1 border-2 border-slate-900 hover:bg-rose-50 text-[10px] font-black uppercase tracking-tight text-rose-700 hover:text-rose-950 transition-colors disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Failed email queue inspector & retrier */}
+          <div className="space-y-4">
+            <div className="border-b-2 border-slate-100 pb-3 flex justify-between items-center">
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-tight text-slate-900">
+                  Failed Email Delivery Queue
+                </h3>
+                <p className="text-[10px] font-bold text-slate-400">
+                  Transmissions stored for manual retry / automatic storage check:
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleRetryEmails}
+                disabled={isRetrying || failedEmails.filter(e => e.status === 'pending').length === 0}
+                className="px-3 py-1 bg-amber-500 text-slate-950 border-2 border-slate-900 text-[10px] font-black uppercase hover:bg-amber-400 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 transition-all cursor-pointer shadow-[2px_2px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none flex items-center gap-1"
+              >
+                {isRetrying ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-3 h-3" />
+                    Retry Pending ({failedEmails.filter(e => e.status === 'pending').length})
+                  </>
+                )}
+              </button>
+            </div>
+
+            {failedEmails.length === 0 ? (
+              <div className="text-center py-10 border-2 border-dashed border-slate-200">
+                <p className="text-xs font-bold text-slate-400">Pristine storage. No unsent emails currently in the queue.</p>
+              </div>
+            ) : (
+              <div className="border-2 border-slate-900 divide-y-2 divide-slate-200 h-72 overflow-y-auto">
+                {failedEmails.map((mail) => (
+                  <div key={mail.id} className="p-3 bg-slate-50/30 hover:bg-slate-50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-400 block truncate max-w-[70%]">
+                        To: {mail.to.join(', ')}
+                      </span>
+                      <span className={`text-[9px] font-black uppercase border border-slate-900 px-1.5 py-0.5 ${
+                        mail.status === 'failed' 
+                          ? 'bg-rose-100 text-rose-800' 
+                          : mail.status === 'pending'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}>
+                        {mail.status}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-xs font-extrabold text-slate-900 truncate">{mail.subject}</p>
+                      {mail.error && (
+                        <p className="text-[10px] font-semibold text-rose-600 bg-rose-50/50 p-1.5 border border-rose-200 rounded mt-1 overflow-x-auto whitespace-pre-wrap font-mono">
+                          Error: {mail.error}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between text-[9px] font-black text-slate-400">
+                      <span>Retries: {mail.retryCount} / 3</span>
+                      <span>{new Date(mail.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+      </div>
+
     </div>
   );
 }
