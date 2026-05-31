@@ -21,8 +21,10 @@ interface DatabaseClient {
   saveReview(date: string, summary: string, score: number): Promise<AIReview>;
   getAchievements(): Promise<Achievement[]>;
   createAchievement(text: string): Promise<Achievement>;
+  deleteAchievementByText(text: string): Promise<void>;
   getActivities(): Promise<Activity[]>;
   createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity>;
+  deleteActivityBySourceId(sourceId: string, type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed'): Promise<void>;
 
   // Roadmap methods
   getRoadmapGroups(): Promise<RoadmapGroup[]>;
@@ -193,6 +195,11 @@ class JsonDBClient implements DatabaseClient {
   }
 
   async createAchievement(text: string): Promise<Achievement> {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const existing = (this.data.achievements || []).find(ach => ach.text === text && ach.createdAt.startsWith(todayStr));
+    if (existing) {
+      return existing;
+    }
     const newAchievement: Achievement = {
       id: Date.now() + Math.floor(Math.random() * 1000),
       text,
@@ -203,11 +210,20 @@ class JsonDBClient implements DatabaseClient {
     return newAchievement;
   }
 
+  async deleteAchievementByText(text: string): Promise<void> {
+    this.data.achievements = (this.data.achievements || []).filter(ach => ach.text !== text);
+    this.save();
+  }
+
   async getActivities(): Promise<Activity[]> {
     return this.data.activities || [];
   }
 
   async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity> {
+    const existing = (this.data.activities || []).find(act => act.type === type && act.sourceId === sourceId);
+    if (existing) {
+      return existing;
+    }
     const newActivity: Activity = {
       id: 'act_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
       type,
@@ -218,6 +234,11 @@ class JsonDBClient implements DatabaseClient {
     this.data.activities.push(newActivity);
     this.save();
     return newActivity;
+  }
+
+  async deleteActivityBySourceId(sourceId: string, type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed'): Promise<void> {
+    this.data.activities = (this.data.activities || []).filter(act => !(act.sourceId === sourceId && act.type === type));
+    this.save();
   }
 
   async getRoadmapGroups(): Promise<RoadmapGroup[]> {
@@ -280,6 +301,11 @@ class JsonDBClient implements DatabaseClient {
       await this.createActivity('roadmap_step_completed', task.id, task.title);
       // 2. Create achievement record
       await this.createAchievement(`Completed roadmap step: ${task.title}`);
+    } else if (!nextCompleted && oldCompleted) {
+      // 1. Delete activity record
+      await this.deleteActivityBySourceId(task.id, 'roadmap_step_completed');
+      // 2. Delete achievement record
+      await this.deleteAchievementByText(`Completed roadmap step: ${task.title}`);
     }
 
     // Check Auto-completion Rules (3.2 Completion Rule)
@@ -562,6 +588,16 @@ class SQLiteDBClient implements DatabaseClient {
   }
 
   async createAchievement(text: string): Promise<Achievement> {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const checkStmt = this.db.prepare('SELECT id, text, createdAt FROM achievements WHERE text = ? AND createdAt LIKE ? LIMIT 1');
+    const existing = checkStmt.get(text, `${todayStr}%`);
+    if (existing) {
+      return {
+        id: existing.id,
+        text: existing.text,
+        createdAt: existing.createdAt
+      };
+    }
     const createdAt = new Date().toISOString();
     const stmt = this.db.prepare('INSERT INTO achievements (text, createdAt) VALUES (?, ?)');
     const result = stmt.run(text, createdAt);
@@ -570,6 +606,11 @@ class SQLiteDBClient implements DatabaseClient {
       text,
       createdAt,
     };
+  }
+
+  async deleteAchievementByText(text: string): Promise<void> {
+    const stmt = this.db.prepare('DELETE FROM achievements WHERE text = ?');
+    stmt.run(text);
   }
 
   async getActivities(): Promise<Activity[]> {
@@ -584,6 +625,17 @@ class SQLiteDBClient implements DatabaseClient {
   }
 
   async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity> {
+    const checkStmt = this.db.prepare('SELECT id, type, sourceId, title, createdAt FROM activities WHERE type = ? AND sourceId = ? LIMIT 1');
+    const existing = checkStmt.get(type, sourceId);
+    if (existing) {
+      return {
+        id: existing.id,
+        type: existing.type as any,
+        sourceId: existing.sourceId,
+        title: existing.title,
+        createdAt: existing.createdAt
+      };
+    }
     const id = 'act_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
     const createdAt = new Date().toISOString();
     const stmt = this.db.prepare('INSERT INTO activities (id, type, sourceId, title, createdAt) VALUES (?, ?, ?, ?, ?)');
@@ -595,6 +647,11 @@ class SQLiteDBClient implements DatabaseClient {
       title,
       createdAt,
     };
+  }
+
+  async deleteActivityBySourceId(sourceId: string, type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed'): Promise<void> {
+    const stmt = this.db.prepare('DELETE FROM activities WHERE sourceId = ? AND type = ?');
+    stmt.run(sourceId, type);
   }
 
   async getRoadmapGroups(): Promise<RoadmapGroup[]> {
@@ -683,6 +740,11 @@ class SQLiteDBClient implements DatabaseClient {
       await this.createActivity('roadmap_step_completed', task.id, task.title);
       // 2. Create achievement record
       await this.createAchievement(`Completed roadmap step: ${task.title}`);
+    } else if (nextCompleted === 0 && task.completed === 1) {
+      // 1. Delete activity record
+      await this.deleteActivityBySourceId(task.id, 'roadmap_step_completed');
+      // 2. Delete achievement record
+      await this.deleteAchievementByText(`Completed roadmap step: ${task.title}`);
     }
 
     // Business check Rule: "3.2 Completion Rule: A RoadmapProject is completed when: ALL RoadmapTask.completed == true"
@@ -1005,6 +1067,15 @@ class MySQLDBClient implements DatabaseClient {
   }
 
   async createAchievement(text: string): Promise<Achievement> {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const [existingRows]: any = await this.pool.execute('SELECT id, text, createdAt FROM achievements WHERE text = ? AND createdAt LIKE ? LIMIT 1', [text, `${todayStr}%`]);
+    if (existingRows && existingRows.length > 0) {
+      return {
+        id: existingRows[0].id,
+        text: existingRows[0].text,
+        createdAt: existingRows[0].createdAt
+      };
+    }
     const createdAt = new Date().toISOString();
     const [result]: any = await this.pool.execute('INSERT INTO achievements (text, createdAt) VALUES (?, ?)', [text, createdAt]);
     return {
@@ -1012,6 +1083,10 @@ class MySQLDBClient implements DatabaseClient {
       text,
       createdAt,
     };
+  }
+
+  async deleteAchievementByText(text: string): Promise<void> {
+    await this.pool.execute('DELETE FROM achievements WHERE text = ?', [text]);
   }
 
   async getActivities(): Promise<Activity[]> {
@@ -1026,6 +1101,16 @@ class MySQLDBClient implements DatabaseClient {
   }
 
   async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity> {
+    const [existingRows]: any = await this.pool.execute('SELECT id, type, sourceId, title, createdAt FROM activities WHERE type = ? AND sourceId = ? LIMIT 1', [type, sourceId]);
+    if (existingRows && existingRows.length > 0) {
+      return {
+        id: existingRows[0].id,
+        type: existingRows[0].type as any,
+        sourceId: existingRows[0].sourceId,
+        title: existingRows[0].title,
+        createdAt: existingRows[0].createdAt
+      };
+    }
     const id = 'act_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
     const createdAt = new Date().toISOString();
     await this.pool.execute('INSERT INTO activities (id, type, sourceId, title, createdAt) VALUES (?, ?, ?, ?, ?)', [
@@ -1038,6 +1123,10 @@ class MySQLDBClient implements DatabaseClient {
       title,
       createdAt,
     };
+  }
+
+  async deleteActivityBySourceId(sourceId: string, type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed'): Promise<void> {
+    await this.pool.execute('DELETE FROM activities WHERE sourceId = ? AND type = ?', [sourceId, type]);
   }
 
   async getRoadmapGroups(): Promise<RoadmapGroup[]> {
@@ -1129,6 +1218,9 @@ class MySQLDBClient implements DatabaseClient {
     if (nextCompleted === 1 && task.completed === 0) {
       await this.createActivity('roadmap_step_completed', task.id, task.title);
       await this.createAchievement(`Completed roadmap step: ${task.title}`);
+    } else if (nextCompleted === 0 && task.completed === 1) {
+      await this.deleteActivityBySourceId(task.id, 'roadmap_step_completed');
+      await this.deleteAchievementByText(`Completed roadmap step: ${task.title}`);
     }
 
     // Check Auto-completion
@@ -1311,9 +1403,13 @@ export class DelegatingDBClient implements DatabaseClient {
   async saveReview(date: string, summary: string, score: number) { return this.activeClient.saveReview(date, summary, score); }
   async getAchievements() { return this.activeClient.getAchievements(); }
   async createAchievement(text: string) { return this.activeClient.createAchievement(text); }
+  async deleteAchievementByText(text: string) { return this.activeClient.deleteAchievementByText(text); }
   async getActivities() { return this.activeClient.getActivities(); }
   async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string) {
     return this.activeClient.createActivity(type, sourceId, title);
+  }
+  async deleteActivityBySourceId(sourceId: string, type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed') {
+    return this.activeClient.deleteActivityBySourceId(sourceId, type);
   }
 
   async getRoadmapGroups() { return this.activeClient.getRoadmapGroups(); }

@@ -87,6 +87,9 @@ app.patch('/api/tasks/:id', async (req, res) => {
     if (task.completed) {
       await dbStore.createAchievement(`Completed: ${task.title}`);
       await dbStore.createActivity('task_completed', String(task.id), task.title);
+    } else {
+      await dbStore.deleteAchievementByText(`Completed: ${task.title}`);
+      await dbStore.deleteActivityBySourceId(String(task.id), 'task_completed');
     }
 
     res.json(task);
