@@ -10,7 +10,11 @@ interface DBConfig {
   uri?: string;
 }
 
-export function Settings() {
+interface SettingsProps {
+  onRefresh?: () => void;
+}
+
+export function Settings({ onRefresh }: SettingsProps) {
   const [engine, setEngine] = useState<'sqlite' | 'mysql' | 'json'>('sqlite');
   const [config, setConfig] = useState<DBConfig>({
     host: '127.0.0.1',
@@ -87,6 +91,7 @@ export function Settings() {
           type: 'success',
           text: `Database engine successfully switched to [${engine.toUpperCase()}]! Dynamic hot-swap applied without restarts.`
         });
+        onRefresh?.();
       } else {
         setStatusMessage({
           type: 'error',

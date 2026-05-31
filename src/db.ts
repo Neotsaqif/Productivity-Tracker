@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createRequire } from 'module';
-import { Task, DailyLog, AIReview, Achievement, RoadmapGroup, RoadmapProject, RoadmapTask } from './types';
+import { Task, DailyLog, AIReview, Achievement, RoadmapGroup, RoadmapProject, RoadmapTask, Activity } from './types';
 
 const requireHelper = createRequire(path.join(process.cwd(), 'dummy.js'));
 
@@ -21,6 +21,8 @@ interface DatabaseClient {
   saveReview(date: string, summary: string, score: number): Promise<AIReview>;
   getAchievements(): Promise<Achievement[]>;
   createAchievement(text: string): Promise<Achievement>;
+  getActivities(): Promise<Activity[]>;
+  createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity>;
 
   // Roadmap methods
   getRoadmapGroups(): Promise<RoadmapGroup[]>;
@@ -41,6 +43,7 @@ class JsonDBClient implements DatabaseClient {
     daily_logs: DailyLog[];
     ai_reviews: AIReview[];
     achievements: Achievement[];
+    activities: Activity[];
     roadmap_projects: RoadmapProject[];
     roadmap_tasks: RoadmapTask[];
     roadmap_groups: RoadmapGroup[];
@@ -49,6 +52,7 @@ class JsonDBClient implements DatabaseClient {
     daily_logs: [],
     ai_reviews: [],
     achievements: [],
+    activities: [],
     roadmap_projects: [],
     roadmap_tasks: [],
     roadmap_groups: [
@@ -68,6 +72,7 @@ class JsonDBClient implements DatabaseClient {
         this.data.daily_logs = this.data.daily_logs || [];
         this.data.ai_reviews = this.data.ai_reviews || [];
         this.data.achievements = this.data.achievements || [];
+        this.data.activities = this.data.activities || [];
         this.data.roadmap_projects = this.data.roadmap_projects || [];
         this.data.roadmap_tasks = this.data.roadmap_tasks || [];
         this.data.roadmap_groups = this.data.roadmap_groups || [];
@@ -189,6 +194,23 @@ class JsonDBClient implements DatabaseClient {
     return newAchievement;
   }
 
+  async getActivities(): Promise<Activity[]> {
+    return this.data.activities || [];
+  }
+
+  async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity> {
+    const newActivity: Activity = {
+      id: 'act_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+      type,
+      sourceId,
+      title,
+      createdAt: new Date().toISOString()
+    };
+    this.data.activities.push(newActivity);
+    this.save();
+    return newActivity;
+  }
+
   async getRoadmapGroups(): Promise<RoadmapGroup[]> {
     return this.data.roadmap_groups;
   }
@@ -240,8 +262,16 @@ class JsonDBClient implements DatabaseClient {
     if (!task) return null;
 
     const nextCompleted = completed !== undefined ? completed : !task.completed;
+    const oldCompleted = task.completed;
     task.completed = nextCompleted;
     task.completedAt = nextCompleted ? new Date().toISOString() : null;
+
+    if (nextCompleted && !oldCompleted) {
+      // 1. Create activity record
+      await this.createActivity('roadmap_step_completed', task.id, task.title);
+      // 2. Create achievement record
+      await this.createAchievement(`Completed roadmap step: ${task.title}`);
+    }
 
     // Check Auto-completion Rules (3.2 Completion Rule)
     const projectTasks = this.data.roadmap_tasks.filter(t => t.projectId === task.projectId);
@@ -249,6 +279,10 @@ class JsonDBClient implements DatabaseClient {
       const project = this.data.roadmap_projects.find(p => p.id === task.projectId);
       if (project && project.status !== 'completed') {
         project.status = 'completed';
+        // Create activity record
+        await this.createActivity('roadmap_project_completed', project.id, project.title);
+        // Create achievement record
+        await this.createAchievement(`Completed roadmap: ${project.title}`);
       }
     }
 
@@ -259,7 +293,12 @@ class JsonDBClient implements DatabaseClient {
   async completeRoadmapProject(id: string): Promise<RoadmapProject | null> {
     const project = this.data.roadmap_projects.find(p => p.id === id);
     if (!project) return null;
+    const oldStatus = project.status;
     project.status = 'completed';
+    if (oldStatus !== 'completed') {
+      await this.createActivity('roadmap_project_completed', project.id, project.title);
+      await this.createAchievement(`Completed roadmap: ${project.title}`);
+    }
     this.save();
     return project;
   }
@@ -308,6 +347,16 @@ class SQLiteDBClient implements DatabaseClient {
       CREATE TABLE IF NOT EXISTS achievements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         text TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      );
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS activities (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        sourceId TEXT NOT NULL,
+        title TEXT NOT NULL,
         createdAt TEXT NOT NULL
       );
     `);
@@ -490,6 +539,31 @@ class SQLiteDBClient implements DatabaseClient {
     };
   }
 
+  async getActivities(): Promise<Activity[]> {
+    const query = this.db.prepare('SELECT id, type, sourceId, title, createdAt FROM activities ORDER BY id DESC');
+    return query.all().map((row: any) => ({
+      id: row.id,
+      type: row.type as any,
+      sourceId: row.sourceId,
+      title: row.title,
+      createdAt: row.createdAt,
+    }));
+  }
+
+  async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity> {
+    const id = 'act_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    const createdAt = new Date().toISOString();
+    const stmt = this.db.prepare('INSERT INTO activities (id, type, sourceId, title, createdAt) VALUES (?, ?, ?, ?, ?)');
+    stmt.run(id, type, sourceId, title, createdAt);
+    return {
+      id,
+      type,
+      sourceId,
+      title,
+      createdAt,
+    };
+  }
+
   async getRoadmapGroups(): Promise<RoadmapGroup[]> {
     const rows = this.db.prepare('SELECT id, name FROM roadmap_groups').all();
     return rows.map((r: any) => ({
@@ -571,12 +645,26 @@ class SQLiteDBClient implements DatabaseClient {
     const updateStmt = this.db.prepare('UPDATE roadmap_tasks SET completed = ?, completedAt = ? WHERE id = ?');
     updateStmt.run(nextCompleted, nextCompletedAt, id);
 
+    if (nextCompleted === 1 && task.completed === 0) {
+      // 1. Create activity record
+      await this.createActivity('roadmap_step_completed', task.id, task.title);
+      // 2. Create achievement record
+      await this.createAchievement(`Completed roadmap step: ${task.title}`);
+    }
+
     // Business check Rule: "3.2 Completion Rule: A RoadmapProject is completed when: ALL RoadmapTask.completed == true"
     // Fetch all siblings of this task
     const siblingTasks = this.db.prepare('SELECT completed FROM roadmap_tasks WHERE projectId = ?').all(task.projectId);
     if (siblingTasks.length > 0 && siblingTasks.every((t: any) => t.completed === 1)) {
-      const updateProject = this.db.prepare("UPDATE roadmap_projects SET status = 'completed' WHERE id = ? AND status != 'completed'");
-      updateProject.run(task.projectId);
+      // Check if project was not already completed
+      const project = this.db.prepare('SELECT id, title, status FROM roadmap_projects WHERE id = ?').get(task.projectId);
+      if (project && project.status !== 'completed') {
+        const updateProject = this.db.prepare("UPDATE roadmap_projects SET status = 'completed' WHERE id = ?");
+        updateProject.run(task.projectId);
+
+        await this.createActivity('roadmap_project_completed', project.id, project.title);
+        await this.createAchievement(`Completed roadmap: ${project.title}`);
+      }
     }
 
     return {
@@ -594,8 +682,13 @@ class SQLiteDBClient implements DatabaseClient {
     const project = this.db.prepare('SELECT id, title, description, groupId, startDate, endDate, status, createdAt FROM roadmap_projects WHERE id = ?').get(id);
     if (!project) return null;
 
-    const updateStmt = this.db.prepare("UPDATE roadmap_projects SET status = 'completed' WHERE id = ?");
-    updateStmt.run(id);
+    if (project.status !== 'completed') {
+      const updateStmt = this.db.prepare("UPDATE roadmap_projects SET status = 'completed' WHERE id = ?");
+      updateStmt.run(id);
+
+      await this.createActivity('roadmap_project_completed', project.id, project.title);
+      await this.createAchievement(`Completed roadmap: ${project.title}`);
+    }
 
     return {
       id: project.id,
@@ -683,6 +776,16 @@ class MySQLDBClient implements DatabaseClient {
       CREATE TABLE IF NOT EXISTS achievements (
         id INT AUTO_INCREMENT PRIMARY KEY,
         text VARCHAR(255) NOT NULL,
+        createdAt VARCHAR(255) NOT NULL
+      ) ENGINE=InnoDB;
+    `);
+
+    await this.pool.execute(`
+      CREATE TABLE IF NOT EXISTS activities (
+        id VARCHAR(255) PRIMARY KEY,
+        type VARCHAR(255) NOT NULL,
+        sourceId VARCHAR(255) NOT NULL,
+        title VARCHAR(255) NOT NULL,
         createdAt VARCHAR(255) NOT NULL
       ) ENGINE=InnoDB;
     `);
@@ -854,6 +957,32 @@ class MySQLDBClient implements DatabaseClient {
     };
   }
 
+  async getActivities(): Promise<Activity[]> {
+    const [rows]: any = await this.pool.execute('SELECT id, type, sourceId, title, createdAt FROM activities ORDER BY id DESC');
+    return rows.map((row: any) => ({
+      id: row.id,
+      type: row.type as any,
+      sourceId: row.sourceId,
+      title: row.title,
+      createdAt: row.createdAt,
+    }));
+  }
+
+  async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string): Promise<Activity> {
+    const id = 'act_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    const createdAt = new Date().toISOString();
+    await this.pool.execute('INSERT INTO activities (id, type, sourceId, title, createdAt) VALUES (?, ?, ?, ?, ?)', [
+      id, type, sourceId, title, createdAt
+    ]);
+    return {
+      id,
+      type,
+      sourceId,
+      title,
+      createdAt,
+    };
+  }
+
   async getRoadmapGroups(): Promise<RoadmapGroup[]> {
     const [rows]: any = await this.pool.execute('SELECT id, name FROM roadmap_groups');
     return rows.map((r: any) => ({
@@ -940,10 +1069,22 @@ class MySQLDBClient implements DatabaseClient {
 
     await this.pool.execute('UPDATE roadmap_tasks SET completed = ?, completedAt = ? WHERE id = ?', [nextCompleted, nextCompletedAt, id]);
 
+    if (nextCompleted === 1 && task.completed === 0) {
+      await this.createActivity('roadmap_step_completed', task.id, task.title);
+      await this.createAchievement(`Completed roadmap step: ${task.title}`);
+    }
+
     // Check Auto-completion
     const [siblingTasks]: any = await this.pool.execute('SELECT completed FROM roadmap_tasks WHERE projectId = ?', [task.projectId]);
     if (siblingTasks.length > 0 && siblingTasks.every((t: any) => t.completed === 1)) {
-      await this.pool.execute("UPDATE roadmap_projects SET status = 'completed' WHERE id = ? AND status != 'completed'", [task.projectId]);
+      const [projects]: any = await this.pool.execute('SELECT id, title, status FROM roadmap_projects WHERE id = ?', [task.projectId]);
+      if (projects && projects.length > 0 && projects[0].status !== 'completed') {
+        const project = projects[0];
+        await this.pool.execute("UPDATE roadmap_projects SET status = 'completed' WHERE id = ?", [task.projectId]);
+
+        await this.createActivity('roadmap_project_completed', project.id, project.title);
+        await this.createAchievement(`Completed roadmap: ${project.title}`);
+      }
     }
 
     return {
@@ -962,7 +1103,11 @@ class MySQLDBClient implements DatabaseClient {
     if (!rows || rows.length === 0) return null;
     const project = rows[0];
 
-    await this.pool.execute("UPDATE roadmap_projects SET status = 'completed' WHERE id = ?", [id]);
+    if (project.status !== 'completed') {
+      await this.pool.execute("UPDATE roadmap_projects SET status = 'completed' WHERE id = ?", [id]);
+      await this.createActivity('roadmap_project_completed', project.id, project.title);
+      await this.createAchievement(`Completed roadmap: ${project.title}`);
+    }
 
     return {
       id: project.id,
@@ -1107,6 +1252,10 @@ export class DelegatingDBClient implements DatabaseClient {
   async saveReview(date: string, summary: string, score: number) { return this.activeClient.saveReview(date, summary, score); }
   async getAchievements() { return this.activeClient.getAchievements(); }
   async createAchievement(text: string) { return this.activeClient.createAchievement(text); }
+  async getActivities() { return this.activeClient.getActivities(); }
+  async createActivity(type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed', sourceId: string, title: string) {
+    return this.activeClient.createActivity(type, sourceId, title);
+  }
 
   async getRoadmapGroups() { return this.activeClient.getRoadmapGroups(); }
   async getRoadmapProjects() { return this.activeClient.getRoadmapProjects(); }

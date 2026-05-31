@@ -40,12 +40,14 @@ app.get('/api/history', async (req, res) => {
     const achievements = await dbStore.getAchievements();
     const logs = await dbStore.getLogs();
     const reviews = await dbStore.getReviews();
+    const activities = await dbStore.getActivities();
 
     res.json({
       tasks,
       achievements,
       logs,
       reviews,
+      activities,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -82,6 +84,7 @@ app.patch('/api/tasks/:id', async (req, res) => {
     // Rule: "Completing a task automatically creates an achievement: 'Completed: {task.title}'"
     if (task.completed) {
       await dbStore.createAchievement(`Completed: ${task.title}`);
+      await dbStore.createActivity('task_completed', String(task.id), task.title);
     }
 
     res.json(task);
@@ -297,14 +300,50 @@ app.post('/api/db/config', async (req, res) => {
 async function runAiReview(date: string, logContent: string) {
   const ai = getGeminiClient();
 
+  // Retrieve verifiable evidence for this specific date
+  const allAchievements = await dbStore.getAchievements();
+  const allActivities = await dbStore.getActivities();
+
+  const dayAchievements = allAchievements.filter(ach => ach.createdAt.startsWith(date));
+  const dayActivities = allActivities.filter(act => act.createdAt.startsWith(date));
+
+  const completedTasks = dayActivities.filter(act => act.type === 'task_completed');
+  const completedRoadmapSteps = dayActivities.filter(act => act.type === 'roadmap_step_completed');
+  const completedRoadmapProjects = dayActivities.filter(act => act.type === 'roadmap_project_completed');
+
+  const achievementsStr = dayAchievements.map(a => `- Achievement Unlocked: ${a.text}`).join('\n') || 'None';
+  const tasksStr = completedTasks.map(t => `- System Verified Task: ${t.title}`).join('\n') || 'None';
+  const stepsStr = completedRoadmapSteps.map(s => `- System Verified Roadmap Step: ${s.title}`).join('\n') || 'None';
+  const projectsStr = completedRoadmapProjects.map(p => `- System Verified Roadmap Project Complete: ${p.title}`).join('\n') || 'None';
+
   // Create full prompt for productivity reviewer
   const prompt = `You are a strict, objective, and neutral productivity reviewer. 
-Analyze the user's daily check-in log and provide an honest, no-sugarcoating review of their accomplishments, gaps, and an overall productivity score.
+Analyze the user's daily check-in log and contrast it with system-tracked evidence for: ${date}.
 
-Log writer's entry: "${logContent}"
+--- SYSTEM TRACKED COLD EVIDENCE EVIDENCE ---
+Completed Tasks completed today:
+${tasksStr}
 
-Your review must be returned as valid structured JSON.
-Be realistic, neutral, and direct. Do not exaggerate praise. A score of 10 must be exceptionally hard to get (only reserve for massive, highly structured outputs). Average work should score 5-7. If they did literally nothing, score appropriately lower.`;
+Completed Roadmap Steps completed today:
+${stepsStr}
+
+Completed Roadmap Projects completed today:
+${projectsStr}
+
+Achievements unlocked today:
+${achievementsStr}
+
+--- USER CHECK-IN LOG WRITEUP ---
+"${logContent}"
+
+--- REVIEW DIRECTIVES & AUDIT RULES ---
+1. Contrast claims in the check-in log writeup with actual system-tracked activities and achievements completed today.
+2. Emphasize tracking evidence: looking at both explicit claims/logs and cold verifiable data.
+3. Call out "unsubstantiated claims" in your Gaps/Missing list (e.g. if the user says they completed "making a database" or "drawing class", but no matching Tasks or Roadmap Steps were completed today).
+4. Populate your "detected_progress" array with all actual verifiable completed tasks, steps, projects, and achievements.
+5. Reward completed work strictly. Active milestones and hard task completion weights highly in grading.
+6. A score of 10 must be exceptionally hard to get (only reserve for massive, highly structured outputs). Average work should score 5-7. If they did literally nothing, score appropriately lower.
+Your review must be returned as valid structured JSON.`;
 
   const response = await ai.models.generateContent({
     model: 'gemini-3.5-flash',
@@ -316,7 +355,7 @@ Be realistic, neutral, and direct. Do not exaggerate praise. A score of 10 must 
         properties: {
           summary: {
             type: Type.STRING,
-            description: 'A brief, realistic summary outlining what was completed, skipped, or failed to achieve.',
+            description: 'A brief, realistic summary outlining what was completed, skipped, or failed to achieve. Point out any unsubstantiated claims from log writeup.',
           },
           positives: {
             type: Type.ARRAY,
@@ -326,14 +365,19 @@ Be realistic, neutral, and direct. Do not exaggerate praise. A score of 10 must 
           missing: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'Constructive list of unaccomplished aims, gaps, or areas for focus.',
+            description: 'Constructive list of unaccomplished aims, gaps, unsubstantiated claims, or areas for focus.',
+          },
+          detected_progress: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'The list of verifiably achieved tasks, roadmap steps, projects, or achievements.',
           },
           score: {
             type: Type.INTEGER,
             description: 'The strict Productivity Score from 1 to 10 (neutral assessment).',
           },
         },
-        required: ['summary', 'positives', 'missing', 'score'],
+        required: ['summary', 'positives', 'missing', 'detected_progress', 'score'],
       },
     },
   });
@@ -349,6 +393,9 @@ Be realistic, neutral, and direct. Do not exaggerate praise. A score of 10 must 
   // Convert to Markdown representation to persist in SQL-compatible db schema 'summary' column
   const formattedSummary = `### Summary
 ${rawJson.summary}
+
+### Detected Progress
+${rawJson.detected_progress.map((dp: string) => `- ${dp}`).join('\n')}
 
 ### Positive Highlights
 ${rawJson.positives.map((p: string) => `- ${p}`).join('\n')}

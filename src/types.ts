@@ -25,6 +25,14 @@ export interface Achievement {
   createdAt: string; // ISO string or format
 }
 
+export interface Activity {
+  id: string;
+  type: 'task_completed' | 'roadmap_step_completed' | 'roadmap_project_completed';
+  sourceId: string;
+  title: string;
+  createdAt: string;
+}
+
 export interface HistoryItem {
   date: string;
   tasksCompleted: { title: string; category: string }[];

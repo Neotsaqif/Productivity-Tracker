@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Task, Achievement, DailyLog, AIReview } from './types';
+import { Task, Achievement, DailyLog, AIReview, Activity } from './types';
 import { Dashboard } from './components/Dashboard';
 import { TaskSystem } from './components/TaskSystem';
 import { DailyCheckin } from './components/DailyCheckin';
@@ -16,6 +16,7 @@ export default function App() {
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [reviews, setReviews] = useState<AIReview[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -33,6 +34,7 @@ export default function App() {
       setAchievements(data.achievements || []);
       setLogs(data.logs || []);
       setReviews(data.reviews || []);
+      setActivities(data.activities || []);
     } catch (err: any) {
       console.error('Error load database sync states:', err);
       setErrorMsg(`Failed to synchronize workspace: ${err.message}. Ensure backend is active.`);
@@ -236,6 +238,7 @@ export default function App() {
                 tasks={tasks}
                 achievements={achievements}
                 logs={logs}
+                activities={activities}
                 onNavigate={(tab) => setActiveTab(tab as TabType)}
               />
             )}
@@ -263,6 +266,7 @@ export default function App() {
                 logs={logs}
                 reviews={reviews}
                 achievements={achievements}
+                activities={activities}
               />
             )}
 
@@ -271,7 +275,7 @@ export default function App() {
             )}
 
             {activeTab === 'settings' && (
-              <Settings />
+              <Settings onRefresh={() => fetchAllData(true)} />
             )}
           </div>
         )}

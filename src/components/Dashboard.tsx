@@ -1,16 +1,17 @@
 import React from 'react';
-import { Task, Achievement, DailyLog } from '../types.js';
-import { CheckCircle2, Flame, Award, Calendar, ChevronRight, CheckSquare, ListTodo } from 'lucide-react';
+import { Task, Achievement, DailyLog, Activity } from '../types';
+import { CheckCircle2, Flame, Award, Calendar, ChevronRight, CheckSquare, ListTodo, MapPin, Milestone, Star } from 'lucide-react';
 
 interface DashboardProps {
   tasks: Task[];
   achievements: Achievement[];
   logs: DailyLog[];
+  activities: Activity[];
   onNavigate: (tab: string) => void;
 }
 
-export function Dashboard({ tasks, achievements, logs, onNavigate }: DashboardProps) {
-  // 1. Calculate today's date formatted nicely in local time
+export function Dashboard({ tasks, achievements, logs, activities, onNavigate }: DashboardProps) {
+  // Today's Date formatted nicely
   const todayStr = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -18,21 +19,17 @@ export function Dashboard({ tasks, achievements, logs, onNavigate }: DashboardPr
     day: 'numeric',
   });
 
-  // Calculate stats
+  // Calculate Tasks Stats
   const activeTasksCount = tasks.filter((t) => !t.completed).length;
   const completedTasksCount = tasks.filter((t) => t.completed).length;
   const totalTasksCount = tasks.length;
   const progressPercentage = totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
 
   // Streak Calculation
-  // If daily_logs exists for today → +1 streak. If missing day breaks chain → reset.
-  // Standard consecutive search lookback logic:
   const getStreak = (): number => {
     if (logs.length === 0) return 0;
-
     const logDatesSet = new Set(logs.map((l) => l.date));
     
-    // Get local date format (YYYY-MM-DD)
     const getLocalDateString = (d: Date) => {
       const year = d.getFullYear();
       const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -47,9 +44,6 @@ export function Dashboard({ tasks, achievements, logs, onNavigate }: DashboardPr
     yesterdayDate.setDate(todayDate.getDate() - 1);
     const yesterdayKey = getLocalDateString(yesterdayDate);
 
-    // Initial cursor: if today has a log, start checking from today.
-    // If today does not have a log, but yesterday does, start checking from yesterday.
-    // Otherwise streak is 0.
     let currentCheckDate = new Date();
     let currentKey = todayKey;
 
@@ -74,6 +68,14 @@ export function Dashboard({ tasks, achievements, logs, onNavigate }: DashboardPr
 
   const streak = getStreak();
   const recentAchievements = achievements.slice(0, 5);
+
+  // Roadmap activities stats
+  const roadmapActivities = (activities || []).filter(
+    (a) => a.type === 'roadmap_step_completed' || a.type === 'roadmap_project_completed'
+  );
+  const completedStepsCount = (activities || []).filter((a) => a.type === 'roadmap_step_completed').length;
+  const completedProjectsCount = (activities || []).filter((a) => a.type === 'roadmap_project_completed').length;
+  const recentRoadmapMilestones = roadmapActivities.slice(0, 4);
 
   return (
     <div className="space-y-10">
@@ -122,7 +124,7 @@ export function Dashboard({ tasks, achievements, logs, onNavigate }: DashboardPr
             <CheckCircle2 className="w-5 h-5 stroke-[2.5]" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-black uppercase tracking-widest text-slate-400">Completion</div>
+            <div className="text-xs font-black uppercase tracking-widest text-slate-400">Task Completion</div>
             <div className="text-4xl font-black text-slate-900 mt-1">
               {progressPercentage}%
             </div>
@@ -160,6 +162,102 @@ export function Dashboard({ tasks, achievements, logs, onNavigate }: DashboardPr
               {achievements.length}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ROADMAP STATISTICS SECTION (NEW!) */}
+      <div className="bg-white border-2 border-slate-900 rounded-none shadow-[6px_6px_0px_0px_rgba(15,23,42,1)] p-6 space-y-6">
+        <div className="border-b-2 border-slate-900 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Milestone className="w-5 h-5 text-slate-900 stroke-[2.5]" />
+            <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">🧭 Strategic Roadmap Performance</h2>
+          </div>
+          <button
+            onClick={() => onNavigate('roadmap')}
+            className="text-xs font-extrabold text-indigo-600 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 px-3 py-1 uppercase tracking-wider rounded-none cursor-pointer"
+          >
+            Manage Roadmaps &rarr;
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Card 1: Completed Steps */}
+          <div className="bg-sky-50/50 border-2 border-sky-950 p-5 rounded-none flex items-center gap-4">
+            <div className="p-3 bg-sky-200 border border-sky-400 text-sky-900 rounded-none">
+              <CheckSquare className="w-5 h-5 stroke-[2.5]" />
+            </div>
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-widest text-sky-600">Roadmap Steps Completed</div>
+              <div className="text-3xl font-black text-sky-950 mt-1">{completedStepsCount}</div>
+            </div>
+          </div>
+
+          {/* Card 2: Completed Projects */}
+          <div className="bg-emerald-50/50 border-2 border-emerald-950 p-5 rounded-none flex items-center gap-4">
+            <div className="p-3 bg-emerald-200 border border-emerald-400 text-emerald-900 rounded-none">
+              <MapPin className="w-5 h-5 stroke-[2.5]" />
+            </div>
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Roadmaps Accomplished</div>
+              <div className="text-3xl font-black text-emerald-950 mt-1">{completedProjectsCount}</div>
+            </div>
+          </div>
+
+          {/* Card 3: Combined Roadmap Achievements count */}
+          <div className="bg-slate-50 border-2 border-slate-900 p-5 rounded-none flex items-center gap-4">
+            <div className="p-3 bg-slate-200 border border-slate-400 text-slate-900 rounded-none">
+              <Award className="w-5 h-5 stroke-[2.5]" />
+            </div>
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Total Roadmap Activity Records</div>
+              <div className="text-3xl font-black text-slate-900 mt-1">{roadmapActivities.length}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Milestone feed */}
+        <div className="space-y-3 pt-2">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Verifiable Milestone Actions:</div>
+          {recentRoadmapMilestones.length === 0 ? (
+            <p className="text-xs text-slate-400 font-bold uppercase tracking-wider italic bg-slate-50 border border-slate-200 p-4 text-center">
+              No milestones completed yet. Check off items in the Roadmaps tabs to unlock real strategic achievements!
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {recentRoadmapMilestones.map((milestone) => {
+                const isProject = milestone.type === 'roadmap_project_completed';
+                return (
+                  <div 
+                    key={milestone.id}
+                    className={`border-2 p-3.5 shadow-[2px_2px_0px_0px_rgba(15,23,42,1)] flex flex-col justify-between ${
+                      isProject 
+                        ? 'border-emerald-900 bg-emerald-50 text-emerald-950' 
+                        : 'border-sky-900 bg-sky-50 text-sky-950'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-1.5">
+                      <span className="text-xs font-black leading-tight">{milestone.title}</span>
+                      <span className={`text-[8px] font-extrabold uppercase px-1.5 py-0.5 border ${
+                        isProject 
+                          ? 'border-emerald-400 bg-emerald-200 text-emerald-800' 
+                          : 'border-sky-400 bg-sky-200 text-sky-800'
+                      }`}>
+                        {isProject ? 'Roadmap Finished' : 'Step Complete'}
+                      </span>
+                    </div>
+                    <span className="text-[8px] font-extrabold text-slate-400 mt-2 uppercase tracking-wider">
+                      {new Date(milestone.createdAt).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
