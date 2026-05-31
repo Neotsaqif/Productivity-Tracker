@@ -43,3 +43,30 @@ export interface DashboardStats {
   progressPercentage: number;
   streak: number;
 }
+
+export interface RoadmapGroup {
+  id: string;
+  name: string;
+}
+
+export interface RoadmapProject {
+  id: string;
+  title: string;
+  description?: string;
+  groupId: string;
+  startDate: string;  // YYYY-MM-DD
+  endDate: string;    // YYYY-MM-DD
+  status: 'active' | 'completed';
+  createdAt: string;
+}
+
+export interface RoadmapTask {
+  id: string;
+  projectId: string;
+  title: string;
+  type: 'learn' | 'project';
+  completed: boolean;
+  completedAt: string | null;
+  createdAt: string;
+}
+

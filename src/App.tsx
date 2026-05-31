@@ -4,9 +4,11 @@ import { Dashboard } from './components/Dashboard';
 import { TaskSystem } from './components/TaskSystem';
 import { DailyCheckin } from './components/DailyCheckin';
 import { ProgressHistory } from './components/ProgressHistory';
-import { LayoutDashboard, CheckSquare, ListTodo, ClipboardList, Clock, Sparkles, RefreshCw, AlertCircle } from 'lucide-react';
+import { RoadmapSystem } from './components/RoadmapSystem';
+import { Settings } from './components/Settings';
+import { LayoutDashboard, CheckSquare, ListTodo, ClipboardList, Clock, Sparkles, RefreshCw, AlertCircle, LayoutTemplate, Settings as SettingsIcon } from 'lucide-react';
 
-type TabType = 'dashboard' | 'tasks' | 'checkin' | 'history';
+type TabType = 'dashboard' | 'tasks' | 'checkin' | 'history' | 'roadmap' | 'settings';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -147,6 +149,8 @@ export default function App() {
     { id: 'tasks', label: 'Daily Tasks', icon: CheckSquare },
     { id: 'checkin', label: 'Daily Check-In', icon: ClipboardList },
     { id: 'history', label: 'Progress History', icon: Clock },
+    { id: 'roadmap', label: 'Project Roadmap', icon: LayoutTemplate },
+    { id: 'settings', label: 'Settings', icon: SettingsIcon },
   ] as const;
 
   return (
@@ -260,6 +264,14 @@ export default function App() {
                 reviews={reviews}
                 achievements={achievements}
               />
+            )}
+
+            {activeTab === 'roadmap' && (
+              <RoadmapSystem />
+            )}
+
+            {activeTab === 'settings' && (
+              <Settings />
             )}
           </div>
         )}
