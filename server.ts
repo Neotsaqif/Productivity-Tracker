@@ -358,7 +358,7 @@ ${achievementsStr}
 Your review must be returned as valid structured JSON.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3.5-flash',
+    model: 'gemini-3.1-flash-lite',
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -479,7 +479,7 @@ Tone: Motivational but honest (no fake praise, call out gaps/unsubstantiated cla
 Your output must be returned as valid structured JSON according to the schema.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.1-flash-lite',
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
