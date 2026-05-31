@@ -7,20 +7,20 @@ interface TaskSystemProps {
   onAddTask: (
     title: string,
     category: string,
-    type?: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled',
+    type?: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled',
     scheduleDate?: string | null
   ) => Promise<void>;
   onToggleTask: (id: number) => Promise<void>;
   onDeleteTask: (id: number) => Promise<void>;
 }
 
-const POPULAR_CATEGORIES = ['School', 'Hobby', 'Skills', 'Reflections', 'Health'];
+const POPULAR_CATEGORIES = ['Daily', 'School', 'Hobby', 'Skills', 'Reflections', 'Health'];
 
 export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: TaskSystemProps) {
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('School');
   const [customCategory, setCustomCategory] = useState('');
-  const [type, setType] = useState<'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled'>('daily');
+  const [type, setType] = useState<'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled'>('daily');
   
   // Default to today's date in local format YYYY-MM-DD
   const getTodayString = () => {
@@ -35,7 +35,7 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Custom scope filters as specified by user visibility logic
-  const [activeView, setActiveView] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'scheduled' | 'history'>('all');
+  const [activeView, setActiveView] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'scheduled' | 'unscheduled' | 'history'>('all');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,6 +95,10 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
         // Show type === "scheduled" even if not today, but hide if past the due date (late)
         return t.type === 'scheduled' && !!t.scheduleDate && t.scheduleDate >= todayStr;
       
+      case 'unscheduled':
+        // Show only unscheduled tasks
+        return t.type === 'unscheduled';
+      
       default:
         return true;
     }
@@ -122,11 +126,11 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
             />
           </div>
 
-          {/* Scope selection */}
+           {/* Scope selection */}
           <div>
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Task Scope (Type)</label>
             <div className="grid grid-cols-3 gap-2">
-              {(['daily', 'weekly', 'monthly', 'yearly', 'scheduled'] as const).map((tScope) => (
+              {(['daily', 'weekly', 'monthly', 'yearly', 'scheduled', 'unscheduled'] as const).map((tScope) => (
                 <button
                   type="button"
                   key={tScope}
@@ -214,11 +218,11 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
         </form>
       </div>
 
-      {/* Right Column: Interactive Multi-Scope task dashboard views */}
+       {/* Right Column: Interactive Multi-Scope task dashboard views */}
       <div className="lg:col-span-2 space-y-6">
         {/* Navigation views board */}
         <div className="bg-white border-2 border-slate-900 rounded-none p-2 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]">
-          <div className="grid grid-cols-3 sm:grid-cols-7 gap-1">
+          <div className="grid grid-cols-3 sm:grid-cols-8 gap-1">
             {[
               { id: 'all', label: '🗂️ All Tasks', desc: 'All active responsibilities' },
               { id: 'today', label: '📅 Today', desc: 'Daily Focus' },
@@ -226,6 +230,7 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
               { id: 'month', label: '🗓️ Monthly', desc: 'Monthly Focus' },
               { id: 'year', label: '🌟 Yearly', desc: 'Yearly Focus' },
               { id: 'scheduled', label: '⏰ Scheduled', desc: `Scheduled Tasks` },
+              { id: 'unscheduled', label: '📋 Unscheduled', desc: `Unscheduled Tasks` },
               { id: 'history', label: '📜 History', desc: 'Completed Archive' }
             ].map((v) => (
               <button
@@ -241,7 +246,7 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
               >
                 <span className="text-xs font-black tracking-tight">{v.label}</span>
                 <span className={`text-[8px] uppercase tracking-tighter ${activeView === v.id ? 'text-slate-300' : 'text-slate-400'}`}>
-                  {v.id === 'scheduled' ? `active/future` : v.id === 'history' ? 'completed' : 'view'}
+                  {v.id === 'scheduled' ? `active/future` : v.id === 'history' ? 'completed' : v.id === 'unscheduled' ? 'no due date' : 'view'}
                 </span>
               </button>
             ))}
@@ -258,15 +263,17 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
               {activeView === 'month' && 'THIS MONTH SCOPE'}
               {activeView === 'year' && 'THIS YEAR SCOPE'}
               {activeView === 'scheduled' && 'ACTIVE AND FUTURE SCHEDULED TASKS'}
+              {activeView === 'unscheduled' && 'UNSCHEDULED BACKLOG TASKS'}
               {activeView === 'history' && 'COMPLETED TASK ARCHIVE'}
             </h3>
             <p className="text-xs text-slate-400 font-semibold uppercase mt-0.5">
-              {activeView === 'all' && 'Type: All Active Scopes (Daily, Weekly, Monthly, Yearly, Scheduled)'}
+              {activeView === 'all' && 'Type: All Active Scopes (Daily, Weekly, Monthly, Yearly, Scheduled, Unscheduled)'}
               {activeView === 'today' && 'Type: Daily Only'}
               {activeView === 'week' && 'Type: Weekly Only'}
               {activeView === 'month' && 'Type: Monthly Only'}
               {activeView === 'year' && 'Type: Yearly Only'}
               {activeView === 'scheduled' && `Scheduled today or later (due >= ${todayStr}, hidden if late)`}
+              {activeView === 'unscheduled' && 'Unscheduled tasks with no concrete due dates'}
               {activeView === 'history' && 'Audit trail of completed outputs'}
             </p>
           </div>
@@ -387,6 +394,7 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
               { id: 'monthly', label: '🗓️ Monthly tasks' },
               { id: 'yearly', label: '🌟 Yearly tasks' },
               { id: 'scheduled', label: '⏰ Scheduled tasks' },
+              { id: 'unscheduled', label: '📋 Unscheduled tasks' },
             ] as const;
 
             return (

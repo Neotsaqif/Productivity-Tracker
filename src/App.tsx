@@ -48,7 +48,7 @@ export default function App() {
   }, []);
 
   // Backend state modification hooks
-  const handleAddTask = async (title: string, category: string, type?: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled', scheduleDate?: string | null) => {
+  const handleAddTask = async (title: string, category: string, type?: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled', scheduleDate?: string | null) => {
     setErrorMsg(null);
     try {
       const res = await fetch('/api/tasks', {

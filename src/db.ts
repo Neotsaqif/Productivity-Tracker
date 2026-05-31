@@ -12,7 +12,7 @@ const JSON_BACKUP_PATH = path.join(process.cwd(), 'productivity.db.json');
 interface DatabaseClient {
   init(): Promise<void>;
   getTasks(): Promise<Task[]>;
-  createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled', scheduleDate: string | null): Promise<Task>;
+  createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled', scheduleDate: string | null): Promise<Task>;
   toggleTask(id: number): Promise<Task | null>;
   deleteTask(id: number): Promise<boolean>;
   getLogs(): Promise<DailyLog[]>;
@@ -125,7 +125,7 @@ class JsonDBClient implements DatabaseClient {
     }));
   }
 
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
     const newTask: Task = {
       id: Date.now() + Math.floor(Math.random() * 1000),
       title,
@@ -568,7 +568,7 @@ class SQLiteDBClient implements DatabaseClient {
     }));
   }
 
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
     const createdAt = new Date().toISOString();
     const stmt = this.db.prepare('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt) VALUES (?, ?, ?, 0, NULL, ?, ?)');
     const result = stmt.run(title, category, type, scheduleDate, createdAt);
@@ -1171,7 +1171,7 @@ class MySQLDBClient implements DatabaseClient {
     }));
   }
 
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
     const createdAt = new Date().toISOString();
     const [result]: any = await this.pool.execute('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt) VALUES (?, ?, ?, 0, NULL, ?, ?)', [title, category, type, scheduleDate, createdAt]);
     return {
@@ -1685,7 +1685,7 @@ export class DelegatingDBClient implements DatabaseClient {
 
   // DatabaseClient Delegations
   async getTasks() { return this.activeClient.getTasks(); }
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null) {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null) {
     return this.activeClient.createTask(title, category, type, scheduleDate);
   }
   async toggleTask(id: number) { return this.activeClient.toggleTask(id); }
