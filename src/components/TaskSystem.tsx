@@ -1,34 +1,55 @@
 import React, { useState } from 'react';
 import { Task } from '../types.js';
-import { Plus, Trash2, CheckCircle2, Bookmark, Clock, CheckSquare } from 'lucide-react';
+import { Plus, Trash2, Clock, Calendar, CheckSquare, ListTodo, Archive } from 'lucide-react';
 
 interface TaskSystemProps {
   tasks: Task[];
-  onAddTask: (title: string, category: string) => Promise<void>;
+  onAddTask: (
+    title: string,
+    category: string,
+    type?: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled',
+    scheduleDate?: string | null
+  ) => Promise<void>;
   onToggleTask: (id: number) => Promise<void>;
   onDeleteTask: (id: number) => Promise<void>;
 }
 
-const POPULAR_CATEGORIES = ['Code', 'Reflections', 'Focus', 'Health', 'Admin', 'Meeting'];
+const POPULAR_CATEGORIES = ['School', 'Hobby', 'Skills', 'Reflections', 'Health'];
 
 export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: TaskSystemProps) {
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState('Code');
+  const [category, setCategory] = useState('School');
   const [customCategory, setCustomCategory] = useState('');
+  const [type, setType] = useState<'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled'>('daily');
+  
+  // Default to today's date in local format YYYY-MM-DD
+  const getTodayString = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const [scheduleDate, setScheduleDate] = useState(getTodayString());
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'active' | 'completed'>('all');
+  
+  // Custom scope filters as specified by user visibility logic
+  const [activeView, setActiveView] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'scheduled' | 'history'>('all');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
 
     const selectedCategory = category === 'Custom' ? (customCategory.trim() || 'General') : category;
+    const finalScheduleDate = type === 'scheduled' ? scheduleDate : null;
 
     setIsSubmitting(true);
     try {
-      await onAddTask(title.trim(), selectedCategory);
+      await onAddTask(title.trim(), selectedCategory, type, finalScheduleDate);
       setTitle('');
       setCustomCategory('');
+      // Keep type and category as is for easier double creations
     } catch (err) {
       console.error(err);
     } finally {
@@ -36,33 +57,107 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
     }
   };
 
+  const todayStr = getTodayString();
+
+  // Filter tasks based on active scope view
   const filteredTasks = tasks.filter((t) => {
-    if (activeFilter === 'active') return !t.completed;
-    if (activeFilter === 'completed') return t.completed;
-    return true;
+    if (activeView === 'history') {
+      return t.completed;
+    }
+
+    // Active views only show incomplete tasks (as per specifications, uncompleted tasks remain stored)
+    if (t.completed) {
+      return false;
+    }
+
+    switch (activeView) {
+      case 'all':
+        // Show all active tasks
+        return true;
+
+      case 'today':
+        // Show type === "daily" AND incomplete tasks
+        return t.type === 'daily';
+      
+      case 'week':
+        // Show only weekly tasks
+        return t.type === 'weekly';
+      
+      case 'month':
+        // Show only monthly tasks
+        return t.type === 'monthly';
+      
+      case 'year':
+        // Show only yearly tasks
+        return t.type === 'yearly';
+      
+      case 'scheduled':
+        // Show type === "scheduled" even if not today, but hide if past the due date (late)
+        return t.type === 'scheduled' && !!t.scheduleDate && t.scheduleDate >= todayStr;
+      
+      default:
+        return true;
+    }
   });
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      {/* Task Creation Section */}
+      {/* Left Sidebar: Task Creator Form */}
       <div className="bg-white border-2 border-slate-900 rounded-none p-6 shadow-[6px_6px_0px_0px_rgba(15,23,42,1)] h-fit">
         <h2 className="text-xl font-black uppercase mb-4 tracking-tight text-slate-900 border-b-2 border-slate-900 pb-2">
           + Create Task
         </h2>
         
         <form onSubmit={handleSubmit} className="space-y-5">
+          {/* Title */}
           <div>
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Task Title</label>
             <input
               type="text"
               required
-              placeholder="e.g. Implement Groq AI Reviews..."
+              placeholder="e.g. Code database schema migrations..."
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-900 rounded-none text-sm font-semibold placeholder-slate-400 focus:outline-none focus:bg-white focus:shadow-[2px_2px_0px_0px_rgba(15,23,42,1)] transition-all"
             />
           </div>
 
+          {/* Scope selection */}
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Task Scope (Type)</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['daily', 'weekly', 'monthly', 'yearly', 'scheduled'] as const).map((tScope) => (
+                <button
+                  type="button"
+                  key={tScope}
+                  onClick={() => setType(tScope)}
+                  className={`py-2 text-[10px] font-bold uppercase tracking-tighter transition-all rounded-none border-2 ${
+                    type === tScope
+                      ? 'border-slate-900 bg-slate-900 text-white font-black shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900'
+                  }`}
+                >
+                  {tScope}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Scheduled Date picker option */}
+          {type === 'scheduled' && (
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Schedule Specific Date</label>
+              <input
+                type="date"
+                required
+                value={scheduleDate}
+                onChange={(e) => setScheduleDate(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-900 rounded-none text-sm font-semibold focus:outline-none focus:bg-white focus:shadow-[2px_2px_0px_0px_rgba(15,23,42,1)] transition-all"
+              />
+            </div>
+          )}
+
+          {/* Categories */}
           <div>
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Category Set</label>
             <div className="grid grid-cols-3 gap-2">
@@ -71,10 +166,10 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
                   type="button"
                   key={cat}
                   onClick={() => setCategory(cat)}
-                  className={`py-2 text-xs uppercase tracking-tight transition-all rounded-none border-2 ${
+                  className={`py-2 text-[10px] uppercase font-bold tracking-tight transition-all rounded-none border-2 ${
                     category === cat
                       ? 'border-slate-900 bg-slate-900 text-white font-black shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]'
-                      : 'border-slate-200 bg-white text-slate-600 font-bold hover:border-slate-900 hover:text-slate-900'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900'
                   }`}
                 >
                   {cat}
@@ -83,10 +178,10 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
               <button
                 type="button"
                 onClick={() => setCategory('Custom')}
-                className={`py-2 col-span-3 text-xs uppercase tracking-tight transition-all rounded-none border-2 ${
+                className={`py-2 col-span-3 text-xs uppercase tracking-tight font-bold transition-all rounded-none border-2 ${
                   category === 'Custom'
                     ? 'border-slate-900 bg-slate-900 text-white font-black shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]'
-                    : 'border-slate-200 bg-white text-slate-600 font-bold hover:border-slate-900 hover:text-slate-900'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900'
                 }`}
               >
                 Custom Category...
@@ -119,91 +214,151 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
         </form>
       </div>
 
-      {/* Task List Section */}
+      {/* Right Column: Interactive Multi-Scope task dashboard views */}
       <div className="lg:col-span-2 space-y-6">
-        {/* Filtering & Count Panel */}
-        <div className="bg-white border-2 border-slate-900 rounded-none p-4 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)] flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex gap-2 w-full sm:w-auto">
-            {(['all', 'active', 'completed'] as const).map((filter) => (
+        {/* Navigation views board */}
+        <div className="bg-white border-2 border-slate-900 rounded-none p-2 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]">
+          <div className="grid grid-cols-3 sm:grid-cols-7 gap-1">
+            {[
+              { id: 'all', label: '🗂️ All Tasks', desc: 'All active responsibilities' },
+              { id: 'today', label: '📅 Today', desc: 'Daily Focus' },
+              { id: 'week', label: '📆 Weekly', desc: 'Weekly Focus' },
+              { id: 'month', label: '🗓️ Monthly', desc: 'Monthly Focus' },
+              { id: 'year', label: '🌟 Yearly', desc: 'Yearly Focus' },
+              { id: 'scheduled', label: '⏰ Scheduled', desc: `Scheduled Tasks` },
+              { id: 'history', label: '📜 History', desc: 'Completed Archive' }
+            ].map((v) => (
               <button
-                key={filter}
-                onClick={() => setActiveFilter(filter)}
-                className={`flex-1 sm:flex-none px-4 py-2 text-xs font-black uppercase tracking-wider border-2 transition-all cursor-pointer ${
-                  activeFilter === filter
-                    ? 'border-slate-900 bg-slate-900 text-white shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]'
-                    : 'border-transparent text-slate-400 hover:text-slate-900'
+                key={v.id}
+                type="button"
+                onClick={() => setActiveView(v.id as any)}
+                title={v.desc}
+                className={`flex flex-col items-center justify-center py-2.5 px-1 border-2 transition-all cursor-pointer ${
+                  activeView === v.id
+                    ? 'border-slate-900 bg-slate-900 text-white font-black shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]'
+                    : 'border-transparent text-slate-500 hover:text-slate-900 hover:border-slate-200'
                 }`}
               >
-                {filter}
+                <span className="text-xs font-black tracking-tight">{v.label}</span>
+                <span className={`text-[8px] uppercase tracking-tighter ${activeView === v.id ? 'text-slate-300' : 'text-slate-400'}`}>
+                  {v.id === 'scheduled' ? `active/future` : v.id === 'history' ? 'completed' : 'view'}
+                </span>
               </button>
             ))}
           </div>
-          <span className="text-xs font-black uppercase tracking-widest text-slate-400">
-            {filteredTasks.length} / {tasks.length} total tasks
+        </div>
+
+        {/* View title + task statistics */}
+        <div className="flex items-center justify-between px-1">
+          <div>
+            <h3 className="text-lg font-black uppercase text-slate-900 flex items-center gap-2">
+              {activeView === 'all' && 'ALL ACTIVE TASKS'}
+              {activeView === 'today' && 'TODAY ACTIVE DAILY TASKS'}
+              {activeView === 'week' && 'THIS WEEK TRACKED TASKS'}
+              {activeView === 'month' && 'THIS MONTH SCOPE'}
+              {activeView === 'year' && 'THIS YEAR SCOPE'}
+              {activeView === 'scheduled' && 'ACTIVE AND FUTURE SCHEDULED TASKS'}
+              {activeView === 'history' && 'COMPLETED TASK ARCHIVE'}
+            </h3>
+            <p className="text-xs text-slate-400 font-semibold uppercase mt-0.5">
+              {activeView === 'all' && 'Type: All Active Scopes (Daily, Weekly, Monthly, Yearly, Scheduled)'}
+              {activeView === 'today' && 'Type: Daily Only'}
+              {activeView === 'week' && 'Type: Weekly Only'}
+              {activeView === 'month' && 'Type: Monthly Only'}
+              {activeView === 'year' && 'Type: Yearly Only'}
+              {activeView === 'scheduled' && `Scheduled today or later (due >= ${todayStr}, hidden if late)`}
+              {activeView === 'history' && 'Audit trail of completed outputs'}
+            </p>
+          </div>
+          <span className="text-xs font-black uppercase tracking-widest text-slate-400 bg-slate-100 border-2 border-slate-200 px-2 py-1">
+            {filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'}
           </span>
         </div>
 
         {/* List of Tasks */}
-        {filteredTasks.length === 0 ? (
-          <div className="bg-white border-2 border-slate-900 rounded-none p-16 text-center text-slate-400 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]">
-            <p className="font-bold text-sm uppercase tracking-widest">No matching tasks found.</p>
-            <p className="text-xs mt-1">Get started by filling out the creation form on the left.</p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {filteredTasks.map((task) => (
-              <div
-                key={task.id}
-                className={`bg-white border-2 p-4 flex items-center justify-between gap-4 transition-all ${
-                  task.completed 
-                    ? 'border-slate-200 opacity-70 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.05)]' 
-                    : 'border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]'
-                }`}
-              >
-                <div className="flex items-center gap-4 min-w-0">
-                  {/* Complete Checkbox */}
-                  <button
-                    onClick={() => onToggleTask(task.id)}
-                    className={`shrink-0 w-6 h-6 rounded-none border-2 flex items-center justify-center transition-all cursor-pointer ${
-                      task.completed
-                        ? 'border-slate-900 bg-slate-900 text-white font-black'
-                        : 'border-slate-900 bg-white hover:bg-slate-100'
+        {(() => {
+          const renderTaskCard = (task: Task) => (
+            <div
+              key={task.id}
+              className={`bg-white border-2 p-4 flex items-center justify-between gap-4 transition-all ${
+                task.completed 
+                  ? 'border-slate-200 opacity-70 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.05)]' 
+                  : 'border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]'
+              }`}
+            >
+              <div className="flex items-center gap-4 min-w-0 flex-1">
+                {/* Complete Checkbox */}
+                <button
+                  onClick={() => onToggleTask(task.id)}
+                  className={`shrink-0 w-6 h-6 rounded-none border-2 flex items-center justify-center transition-all cursor-pointer ${
+                    task.completed
+                      ? 'border-slate-900 bg-slate-900 text-white font-black'
+                      : 'border-slate-900 bg-white hover:bg-slate-100'
+                  }`}
+                >
+                  {task.completed && (
+                    <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
+
+                <div className="min-w-0 flex-1">
+                  <span
+                    className={`text-sm font-bold tracking-tight break-all block ${
+                      task.completed ? 'line-through text-slate-400' : 'text-slate-900'
                     }`}
                   >
-                    {task.completed && (
-                      <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </button>
-
-                  <div className="min-w-0">
-                    <span
-                      className={`text-sm font-bold tracking-tight break-all block ${
-                        task.completed ? 'line-through text-slate-400' : 'text-slate-900'
-                      }`}
-                    >
-                      {task.title}
+                    {/* Required output format: [TYPE] Task Title */}
+                    <span className="text-indigo-600 font-extrabold mr-1.5 uppercase">
+                      [{task.type || 'daily'}]
                     </span>
-                    <div className="flex items-center gap-3 mt-2">
-                      <span className={`px-2 py-0.5 text-[9px] font-black uppercase tracking-widest border-2 rounded-none ${
-                        task.completed 
-                          ? 'bg-slate-100 border-slate-300 text-slate-400'
-                          : 'bg-indigo-50 border-slate-900 text-indigo-900 shadow-[1px_1px_0px_0px_rgba(15,23,42,1)]'
-                      }`}>
-                        {task.category}
+                    {task.title}
+                  </span>
+                  
+                  <div className="flex flex-wrap items-center gap-3 mt-2">
+                    {/* Required output status display */}
+                    <span className={`text-[9px] font-black uppercase tracking-wider`}>
+                      Status: <span className={task.completed ? 'text-emerald-600 font-extrabold' : 'text-indigo-600 font-extrabold'}>
+                        {task.completed ? 'Completed' : 'Active'}
                       </span>
-                      <span className="flex items-center gap-1 text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                        <Clock className="w-3 h-3 text-slate-400" />
-                        {new Date(task.createdAt).toLocaleDateString(undefined, {
+                    </span>
+
+                    {/* Required display for scheduled tasks: Due: YYYY-MM-DD */}
+                    {task.type === 'scheduled' && task.scheduleDate && (
+                      <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-amber-600 bg-amber-50 px-1.5 py-0.5 border border-amber-300">
+                        <Calendar className="w-3 h-3" />
+                        Due: {task.scheduleDate}
+                      </span>
+                    )}
+
+                    <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest border-2 rounded-none bg-slate-50 border-slate-950 text-slate-900">
+                      {task.category}
+                    </span>
+
+                    <span className="flex items-center gap-1 text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+                      <Clock className="w-3 h-3 text-slate-300" />
+                      Added: {new Date(task.createdAt).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                      })}
+                    </span>
+
+                    {task.completed && task.completedAt && (
+                      <span className="flex items-center gap-1 text-[9px] text-emerald-400 font-bold uppercase tracking-wider">
+                        Done: {new Date(task.completedAt).toLocaleDateString(undefined, {
                           month: 'short',
                           day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
                         })}
                       </span>
-                    </div>
+                    )}
                   </div>
                 </div>
+              </div>
 
+              <div className="flex items-center gap-2">
                 <button
                   onClick={() => onDeleteTask(task.id)}
                   title="Delete Task"
@@ -212,9 +367,59 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
-            ))}
-          </div>
-        )}
+            </div>
+          );
+
+          if (filteredTasks.length === 0) {
+            return (
+              <div className="bg-white border-2 border-slate-900 rounded-none p-16 text-center text-slate-400 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]">
+                <CheckSquare className="w-12 h-12 mx-auto stroke-[1.5] text-slate-300 mb-3" />
+                <p className="font-bold text-sm uppercase tracking-widest text-slate-900">No active tasks in this scope.</p>
+                <p className="text-xs mt-1">Excellent! All items are either handled, scheduled elsewise, or ready to be created.</p>
+              </div>
+            );
+          }
+
+          if (activeView === 'all') {
+            const scopeDefinitions = [
+              { id: 'daily', label: '☀️ Daily tasks' },
+              { id: 'weekly', label: '📅 Weekly tasks' },
+              { id: 'monthly', label: '🗓️ Monthly tasks' },
+              { id: 'yearly', label: '🌟 Yearly tasks' },
+              { id: 'scheduled', label: '⏰ Scheduled tasks' },
+            ] as const;
+
+            return (
+              <div className="space-y-8">
+                {scopeDefinitions.map((scope) => {
+                  const scopeTasks = filteredTasks.filter((t) => t.type === scope.id);
+                  if (scopeTasks.length === 0) return null;
+                  return (
+                    <div key={scope.id} className="space-y-4">
+                      <div className="border-b-4 border-slate-900 pb-2 flex items-center justify-between">
+                        <h4 className="text-xs font-black uppercase text-slate-900 tracking-widest bg-slate-900 text-white px-3 py-1 shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]">
+                          {scope.label}
+                        </h4>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          {scopeTasks.length} active {scopeTasks.length === 1 ? 'task' : 'tasks'}
+                        </span>
+                      </div>
+                      <div className="space-y-4">
+                        {scopeTasks.map(renderTaskCard)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
+
+          return (
+            <div className="space-y-4">
+              {filteredTasks.map(renderTaskCard)}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

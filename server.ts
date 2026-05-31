@@ -57,11 +57,13 @@ app.get('/api/history', async (req, res) => {
 // POST /api/tasks - Create a task
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { title, category } = req.body;
+    const { title, category, type, scheduleDate } = req.body;
     if (!title || !category) {
       return res.status(400).json({ error: 'Title and category are required' });
     }
-    const task = await dbStore.createTask(title, category);
+    const taskType = type || 'daily';
+    const sDate = scheduleDate || null;
+    const task = await dbStore.createTask(title, category, taskType, sDate);
     res.json(task);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

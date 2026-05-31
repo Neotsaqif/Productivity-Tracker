@@ -12,7 +12,7 @@ const JSON_BACKUP_PATH = path.join(process.cwd(), 'productivity.db.json');
 interface DatabaseClient {
   init(): Promise<void>;
   getTasks(): Promise<Task[]>;
-  createTask(title: string, category: string): Promise<Task>;
+  createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled', scheduleDate: string | null): Promise<Task>;
   toggleTask(id: number): Promise<Task | null>;
   deleteTask(id: number): Promise<boolean>;
   getLogs(): Promise<DailyLog[]>;
@@ -102,15 +102,23 @@ class JsonDBClient implements DatabaseClient {
   }
 
   async getTasks(): Promise<Task[]> {
-    return this.data.tasks;
+    return (this.data.tasks || []).map(t => ({
+      ...t,
+      type: t.type || 'daily',
+      completedAt: t.completedAt || null,
+      scheduleDate: t.scheduleDate || null
+    }));
   }
 
-  async createTask(title: string, category: string): Promise<Task> {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
     const newTask: Task = {
       id: Date.now() + Math.floor(Math.random() * 1000),
       title,
       category,
+      type,
       completed: false,
+      completedAt: null,
+      scheduleDate,
       createdAt: new Date().toISOString(),
     };
     this.data.tasks.push(newTask);
@@ -122,6 +130,7 @@ class JsonDBClient implements DatabaseClient {
     const task = this.data.tasks.find((t) => t.id === id);
     if (!task) return null;
     task.completed = !task.completed;
+    task.completedAt = task.completed ? new Date().toISOString() : null;
     this.save();
     return task;
   }
@@ -321,7 +330,10 @@ class SQLiteDBClient implements DatabaseClient {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
         category TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'daily',
         completed INTEGER NOT NULL DEFAULT 0,
+        completedAt TEXT,
+        scheduleDate TEXT,
         createdAt TEXT NOT NULL
       );
     `);
@@ -410,49 +422,70 @@ class SQLiteDBClient implements DatabaseClient {
       // Column may already exist, ignore error safely
     }
 
+    // Ensure task type, completedAt, and scheduleDate columns exist on older DBs
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'daily'");
+    } catch (e) {}
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN completedAt TEXT");
+    } catch (e) {}
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN scheduleDate TEXT");
+    } catch (e) {}
+
     console.log('node:sqlite tables verified/created successfully.');
   }
 
   async getTasks(): Promise<Task[]> {
-    const query = this.db.prepare('SELECT id, title, category, completed, createdAt FROM tasks ORDER BY id DESC');
+    const query = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks ORDER BY id DESC');
     const rows = query.all();
     return rows.map((row: any) => ({
       id: row.id,
       title: row.title,
       category: row.category,
+      type: (row.type || 'daily') as any,
       completed: Boolean(row.completed),
+      completedAt: row.completedAt || null,
+      scheduleDate: row.scheduleDate || null,
       createdAt: row.createdAt,
     }));
   }
 
-  async createTask(title: string, category: string): Promise<Task> {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
     const createdAt = new Date().toISOString();
-    const stmt = this.db.prepare('INSERT INTO tasks (title, category, completed, createdAt) VALUES (?, ?, 0, ?)');
-    const result = stmt.run(title, category, createdAt);
+    const stmt = this.db.prepare('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt) VALUES (?, ?, ?, 0, NULL, ?, ?)');
+    const result = stmt.run(title, category, type, scheduleDate, createdAt);
     return {
       id: Number(result.lastInsertRowid),
       title,
       category,
+      type,
       completed: false,
+      completedAt: null,
+      scheduleDate,
       createdAt,
     };
   }
 
   async toggleTask(id: number): Promise<Task | null> {
     // Get current state
-    const selectStmt = this.db.prepare('SELECT id, title, category, completed, createdAt FROM tasks WHERE id = ?');
+    const selectStmt = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks WHERE id = ?');
     const task = selectStmt.get(id);
     if (!task) return null;
 
     const nextCompleted = task.completed === 1 ? 0 : 1;
-    const updateStmt = this.db.prepare('UPDATE tasks SET completed = ? WHERE id = ?');
-    updateStmt.run(nextCompleted, id);
+    const nextCompletedAt = nextCompleted === 1 ? new Date().toISOString() : null;
+    const updateStmt = this.db.prepare('UPDATE tasks SET completed = ?, completedAt = ? WHERE id = ?');
+    updateStmt.run(nextCompleted, nextCompletedAt, id);
 
     return {
       id: task.id,
       title: task.title,
       category: task.category,
+      type: (task.type || 'daily') as any,
       completed: Boolean(nextCompleted),
+      completedAt: nextCompletedAt,
+      scheduleDate: task.scheduleDate || null,
       createdAt: task.createdAt,
     };
   }
@@ -750,7 +783,10 @@ class MySQLDBClient implements DatabaseClient {
         id INT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         category VARCHAR(255) NOT NULL,
+        type VARCHAR(255) NOT NULL DEFAULT 'daily',
         completed TINYINT(1) NOT NULL DEFAULT 0,
+        completedAt VARCHAR(255),
+        scheduleDate VARCHAR(255),
         createdAt VARCHAR(255) NOT NULL
       ) ENGINE=InnoDB;
     `);
@@ -840,45 +876,66 @@ class MySQLDBClient implements DatabaseClient {
       // Column may already exist, ignore error safely
     }
 
+    // Ensure tasks new columns exist on older DBs
+    try {
+      await this.pool.execute("ALTER TABLE tasks ADD COLUMN type VARCHAR(255) NOT NULL DEFAULT 'daily'");
+    } catch (e) {}
+    try {
+      await this.pool.execute("ALTER TABLE tasks ADD COLUMN completedAt VARCHAR(255)");
+    } catch (e) {}
+    try {
+      await this.pool.execute("ALTER TABLE tasks ADD COLUMN scheduleDate VARCHAR(255)");
+    } catch (e) {}
+
     console.log('MySQL schemas initialized and connected successfully.');
   }
 
   async getTasks(): Promise<Task[]> {
-    const [rows]: any = await this.pool.execute('SELECT id, title, category, completed, createdAt FROM tasks ORDER BY id DESC');
+    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks ORDER BY id DESC');
     return rows.map((row: any) => ({
       id: row.id,
       title: row.title,
       category: row.category,
+      type: (row.type || 'daily') as any,
       completed: Boolean(row.completed),
+      completedAt: row.completedAt || null,
+      scheduleDate: row.scheduleDate || null,
       createdAt: row.createdAt,
     }));
   }
 
-  async createTask(title: string, category: string): Promise<Task> {
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
     const createdAt = new Date().toISOString();
-    const [result]: any = await this.pool.execute('INSERT INTO tasks (title, category, completed, createdAt) VALUES (?, ?, 0, ?)', [title, category, createdAt]);
+    const [result]: any = await this.pool.execute('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt) VALUES (?, ?, ?, 0, NULL, ?, ?)', [title, category, type, scheduleDate, createdAt]);
     return {
       id: Number(result.insertId),
       title,
       category,
+      type,
       completed: false,
+      completedAt: null,
+      scheduleDate,
       createdAt,
     };
   }
 
   async toggleTask(id: number): Promise<Task | null> {
-    const [rows]: any = await this.pool.execute('SELECT id, title, category, completed, createdAt FROM tasks WHERE id = ?', [id]);
+    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks WHERE id = ?', [id]);
     if (!rows || rows.length === 0) return null;
     const task = rows[0];
 
     const nextCompleted = task.completed === 1 ? 0 : 1;
-    await this.pool.execute('UPDATE tasks SET completed = ? WHERE id = ?', [nextCompleted, id]);
+    const nextCompletedAt = nextCompleted === 1 ? new Date().toISOString() : null;
+    await this.pool.execute('UPDATE tasks SET completed = ?, completedAt = ? WHERE id = ?', [nextCompleted, nextCompletedAt, id]);
 
     return {
       id: task.id,
       title: task.title,
       category: task.category,
+      type: (task.type || 'daily') as any,
       completed: Boolean(nextCompleted),
+      completedAt: nextCompletedAt,
+      scheduleDate: task.scheduleDate || null,
       createdAt: task.createdAt,
     };
   }
@@ -1243,7 +1300,9 @@ export class DelegatingDBClient implements DatabaseClient {
 
   // DatabaseClient Delegations
   async getTasks() { return this.activeClient.getTasks(); }
-  async createTask(title: string, category: string) { return this.activeClient.createTask(title, category); }
+  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' = 'daily', scheduleDate: string | null = null) {
+    return this.activeClient.createTask(title, category, type, scheduleDate);
+  }
   async toggleTask(id: number) { return this.activeClient.toggleTask(id); }
   async deleteTask(id: number) { return this.activeClient.deleteTask(id); }
   async getLogs() { return this.activeClient.getLogs(); }

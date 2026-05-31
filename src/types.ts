@@ -2,7 +2,10 @@ export interface Task {
   id: number;
   title: string;
   category: string;
+  type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled';
   completed: boolean;
+  completedAt: string | null;
+  scheduleDate: string | null; // YYYY-MM-DD
   createdAt: string;
 }
 

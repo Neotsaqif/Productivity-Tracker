@@ -48,13 +48,13 @@ export default function App() {
   }, []);
 
   // Backend state modification hooks
-  const handleAddTask = async (title: string, category: string) => {
+  const handleAddTask = async (title: string, category: string, type?: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled', scheduleDate?: string | null) => {
     setErrorMsg(null);
     try {
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, category }),
+        body: JSON.stringify({ title, category, type, scheduleDate }),
       });
       if (!res.ok) {
         const errData = await res.json();
