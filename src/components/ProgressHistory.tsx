@@ -155,7 +155,7 @@ export function ProgressHistory({ logs, reviews, achievements, activities }: Pro
                       </span>
                       {hasReview && (
                         <span className={`text-[10px] font-black uppercase tracking-wider border-2 border-slate-900 px-2 py-0.5 rounded-none shadow-[1.5px_1.5px_0px_0px_rgba(15,23,42,1)] ${scoreBg}`}>
-                          AI Score: {score}/10
+                          Daily Score: {score}/10{data.review?.bonusScore && data.review.bonusScore > 0 ? ` (+${data.review.bonusScore.toFixed(1)})` : ''}
                         </span>
                       )}
                     </div>

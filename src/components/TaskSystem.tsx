@@ -61,43 +61,41 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
 
   // Filter tasks based on active scope view
   const filteredTasks = tasks.filter((t) => {
+    const status = t.status || 'active';
+
     if (activeView === 'history') {
-      return t.completed;
+      return status === 'completed' || status === 'missed';
     }
 
-    // Active views only show incomplete tasks (as per specifications, uncompleted tasks remain stored)
-    if (t.completed) {
+    // Active views only show active status tasks
+    if (status !== 'active') {
       return false;
     }
 
+    // Unscheduled tasks are always visible in any active view except for specific filters
+    const isUnscheduled = t.type === 'unscheduled';
+
     switch (activeView) {
       case 'all':
-        // Show all active tasks
         return true;
 
       case 'today':
-        // Show type === "daily" AND incomplete tasks
-        return t.type === 'daily';
+        return t.type === 'daily' || (t.type === 'scheduled' && t.scheduleDate === todayStr) || isUnscheduled;
       
       case 'week':
-        // Show only weekly tasks
-        return t.type === 'weekly';
+        return t.type === 'weekly' || isUnscheduled;
       
       case 'month':
-        // Show only monthly tasks
-        return t.type === 'monthly';
+        return t.type === 'monthly' || isUnscheduled;
       
       case 'year':
-        // Show only yearly tasks
-        return t.type === 'yearly';
+        return t.type === 'yearly' || isUnscheduled;
       
       case 'scheduled':
-        // Show type === "scheduled" even if not today, but hide if past the due date (late)
-        return t.type === 'scheduled' && !!t.scheduleDate && t.scheduleDate >= todayStr;
+        return t.type === 'scheduled';
       
       case 'unscheduled':
-        // Show only unscheduled tasks
-        return t.type === 'unscheduled';
+        return isUnscheduled;
       
       default:
         return true;
@@ -284,98 +282,135 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
 
         {/* List of Tasks */}
         {(() => {
-          const renderTaskCard = (task: Task) => (
-            <div
-              key={task.id}
-              className={`bg-white border-2 p-4 flex items-center justify-between gap-4 transition-all ${
-                task.completed 
-                  ? 'border-slate-200 opacity-70 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.05)]' 
-                  : 'border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]'
-              }`}
-            >
-              <div className="flex items-center gap-4 min-w-0 flex-1">
-                {/* Complete Checkbox */}
-                <button
-                  onClick={() => onToggleTask(task.id)}
-                  className={`shrink-0 w-6 h-6 rounded-none border-2 flex items-center justify-center transition-all cursor-pointer ${
-                    task.completed
-                      ? 'border-slate-900 bg-slate-900 text-white font-black'
-                      : 'border-slate-900 bg-white hover:bg-slate-100'
-                  }`}
-                >
-                  {task.completed && (
-                    <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </button>
+          const renderTaskCard = (task: Task) => {
+            const status = task.status || 'active';
+            const isCompleted = task.completed || status === 'completed';
+            const isMissed = status === 'missed';
+            const isArchived = status === 'completed' || status === 'missed';
 
-                <div className="min-w-0 flex-1">
-                  <span
-                    className={`text-sm font-bold tracking-tight break-all block ${
-                      task.completed ? 'line-through text-slate-400' : 'text-slate-900'
+            return (
+              <div
+                key={task.id}
+                className={`bg-white border-2 p-4 flex items-center justify-between gap-4 transition-all ${
+                  isCompleted
+                    ? 'border-slate-200 opacity-70 shadow-[2px_2px_0px_0px_rgba(15,23,42,0.05)]'
+                    : isMissed
+                    ? 'border-red-350 bg-red-50/10 opacity-80 shadow-[2px_2px_0px_0px_rgba(239,68,68,0.1)]'
+                    : 'border-slate-900 shadow-[4px_4px_0px_0px_rgba(15,23,42,1)]'
+                }`}
+              >
+                <div className="flex items-center gap-4 min-w-0 flex-1">
+                  {/* Complete Checkbox */}
+                  <button
+                    disabled={isArchived}
+                    onClick={() => onToggleTask(task.id)}
+                    className={`shrink-0 w-6 h-6 rounded-none border-2 flex items-center justify-center transition-all ${
+                      isArchived
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-50'
+                        : 'cursor-pointer border-slate-900 bg-white hover:bg-slate-100'
+                    } ${
+                      isCompleted && !isMissed
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : ''
                     }`}
                   >
-                    {/* Required output format: [TYPE] Task Title */}
-                    <span className="text-indigo-600 font-extrabold mr-1.5 uppercase">
-                      [{task.type || 'daily'}]
-                    </span>
-                    {task.title}
-                  </span>
-                  
-                  <div className="flex flex-wrap items-center gap-3 mt-2">
-                    {/* Required output status display */}
-                    <span className={`text-[9px] font-black uppercase tracking-wider`}>
-                      Status: <span className={task.completed ? 'text-emerald-600 font-extrabold' : 'text-indigo-600 font-extrabold'}>
-                        {task.completed ? 'Completed' : 'Active'}
-                      </span>
-                    </span>
-
-                    {/* Required display for scheduled tasks: Due: YYYY-MM-DD */}
-                    {task.type === 'scheduled' && task.scheduleDate && (
-                      <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-amber-600 bg-amber-50 px-1.5 py-0.5 border border-amber-300">
-                        <Calendar className="w-3 h-3" />
-                        Due: {task.scheduleDate}
-                      </span>
+                    {isCompleted && (
+                      <svg className="w-3.5 h-3.5 text-white animate-fade-in" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7" />
+                      </svg>
                     )}
+                    {isMissed && (
+                      <span className="text-red-600 text-xs font-black select-none leading-none">×</span>
+                    )}
+                  </button>
 
-                    <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest border-2 rounded-none bg-slate-50 border-slate-950 text-slate-900">
-                      {task.category}
+                  <div className="min-w-0 flex-1">
+                    <span
+                      className={`text-sm font-bold tracking-tight break-all block ${
+                        isCompleted
+                          ? 'line-through text-slate-400 font-medium'
+                          : isMissed
+                          ? 'line-through text-red-400 font-semibold'
+                          : 'text-slate-900'
+                      }`}
+                    >
+                      {/* Required output format: [TYPE] Task Title */}
+                      <span className="text-indigo-600 font-extrabold mr-1.5 uppercase">
+                        [{task.type || 'daily'}]
+                      </span>
+                      {task.title}
                     </span>
+                    
+                    <div className="flex flex-wrap items-center gap-3 mt-2">
+                      {/* Required output status display */}
+                      <span className="text-[9px] font-black uppercase tracking-wider">
+                        Status:{' '}
+                        <span
+                          className={
+                            isCompleted
+                              ? 'text-emerald-600 font-extrabold'
+                              : isMissed
+                              ? 'text-red-600 font-extrabold'
+                              : 'text-indigo-600 font-extrabold'
+                          }
+                        >
+                          {isCompleted ? 'Completed' : isMissed ? 'Missed (Expired)' : 'Active'}
+                        </span>
+                      </span>
 
-                    <span className="flex items-center gap-1 text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                      <Clock className="w-3 h-3 text-slate-300" />
-                      Added: {new Date(task.createdAt).toLocaleDateString(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                      })}
-                    </span>
+                      {/* Required display for scheduled tasks: Due: YYYY-MM-DD */}
+                      {task.type === 'scheduled' && task.scheduleDate && (
+                        <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-amber-600 bg-amber-50 px-1.5 py-0.5 border border-amber-300">
+                          <Calendar className="w-3 h-3" />
+                          Due: {task.scheduleDate}
+                        </span>
+                      )}
 
-                    {task.completed && task.completedAt && (
-                      <span className="flex items-center gap-1 text-[9px] text-emerald-400 font-bold uppercase tracking-wider">
-                        Done: {new Date(task.completedAt).toLocaleDateString(undefined, {
+                      {/* Display cycle ranges */}
+                      {task.cycleStart && task.cycleEnd && (
+                        <span className="flex items-center gap-1 text-[9px] font-bold text-slate-500 uppercase tracking-tight bg-slate-50 border border-slate-200 px-1.5 py-0.5">
+                          Cycle: {task.cycleStart} → {task.cycleEnd}
+                        </span>
+                      )}
+
+                      <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest border-2 rounded-none bg-slate-50 border-slate-950 text-slate-900">
+                        {task.category}
+                      </span>
+
+                      <span className="flex items-center gap-1 text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+                        <Clock className="w-3 h-3 text-slate-300" />
+                        Added: {new Date(task.createdAt).toLocaleDateString(undefined, {
                           month: 'short',
                           day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
                         })}
                       </span>
-                    )}
+
+                      {task.completed && task.completedAt && (
+                        <span className="flex items-center gap-1 text-[9px] text-emerald-400 font-bold uppercase tracking-wider">
+                          Done: {new Date(task.completedAt).toLocaleDateString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => onDeleteTask(task.id)}
-                  title="Delete Task"
-                  className="p-2 text-slate-350 hover:text-red-600 hover:bg-red-50 hover:border-red-900 border-2 border-transparent transition-all rounded-none cursor-pointer"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onDeleteTask(task.id)}
+                    title="Delete Task"
+                    className="p-2 text-slate-350 hover:text-red-600 hover:bg-red-50 hover:border-red-900 border-2 border-transparent transition-all rounded-none cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-            </div>
-          );
+            );
+          };
 
           if (filteredTasks.length === 0) {
             return (

@@ -38,12 +38,61 @@ export function Settings({ onRefresh }: SettingsProps) {
   const [isSavingRecipients, setIsSavingRecipients] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
 
+  // Resend API Configuration State
+  const [resendApiKey, setResendApiKey] = useState('');
+  const [emailFrom, setEmailFrom] = useState('');
+  const [isSavingResend, setIsSavingResend] = useState(false);
+  const [resendSuccessMsg, setResendSuccessMsg] = useState<string | null>(null);
+  const [resendErrorMsg, setResendErrorMsg] = useState<string | null>(null);
+
   // Load current database configurations & email settings on mount
   useEffect(() => {
     fetchConfig();
     fetchEmailSettings();
     fetchFailedEmails();
+    fetchResendConfig();
   }, []);
+
+  const fetchResendConfig = async () => {
+    try {
+      const res = await fetch('/api/email/resend-config');
+      if (res.ok) {
+        const data = await res.json();
+        setResendApiKey(data.resend_api_key || '');
+        setEmailFrom(data.email_from || '');
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch Resend config:', err);
+    }
+  };
+
+  const handleSaveResendConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingResend(true);
+    setResendSuccessMsg(null);
+    setResendErrorMsg(null);
+    try {
+      const res = await fetch('/api/email/resend-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resend_api_key: resendApiKey,
+          email_from: emailFrom,
+        }),
+      });
+      if (res.ok) {
+        setResendSuccessMsg('Resend configuration saved successfully!');
+        await fetchResendConfig();
+      } else {
+        const data = await res.json();
+        setResendErrorMsg(data.error || 'Failed to save Resend configuration.');
+      }
+    } catch (err: any) {
+      setResendErrorMsg('Network error saving Resend: ' + err.message);
+    } finally {
+      setIsSavingResend(false);
+    }
+  };
 
   const fetchEmailSettings = async () => {
     try {
@@ -153,17 +202,17 @@ export function Settings({ onRefresh }: SettingsProps) {
       const res = await fetch('/api/email/test', { method: 'POST' });
       const data = await res.json();
       await fetchFailedEmails();
-      if (res.ok) {
-        setEmailStatusMessage({
-          type: 'success',
-          text: data.message || 'Diagnostic Resend API test email dispatched successfully!'
-        });
-      } else {
-        setEmailStatusMessage({
-          type: 'error',
-          text: data.error || 'Failed to dispatch diagnostic Resend API test email.'
-        });
-      }
+        if (res.ok) {
+          setEmailStatusMessage({
+            type: 'success',
+            text: data.message || 'Diagnostic Resend API test email dispatched successfully!'
+          });
+        } else {
+          setEmailStatusMessage({
+            type: 'error',
+            text: data.error || 'Failed to dispatch diagnostic Resend API test email.'
+          });
+        }
     } catch (err: any) {
       await fetchFailedEmails();
       setEmailStatusMessage({
@@ -615,16 +664,16 @@ export function Settings({ onRefresh }: SettingsProps) {
               AI Progress Email Reports
             </h2>
             <p className="text-xs md:text-sm font-semibold text-slate-600 max-w-xl mt-1 leading-relaxed">
-              Automatically compile and dispatch daily AI productivity audit reports right to your recipients' inboxes using the Resend API immediately following each of your check-ins.
+              Automatically compile and dispatch daily AI productivity audit reports right to your recipients' inboxes using Resend immediately following each of your check-ins.
             </p>
           </div>
           <div className="flex-shrink-0">
             <button
-              type="button"
-              onClick={handleTestEmail}
-              disabled={isTesting || recipients.length === 0}
-              className="px-4 py-2.5 bg-indigo-600 text-white border-2 border-slate-900 text-xs font-black uppercase tracking-wider hover:bg-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 transition-all cursor-pointer shadow-[4px_4px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none flex items-center gap-2"
-              title={recipients.length === 0 ? "Please add at least one recipient email below first" : "Trigger diagnostic Resend API delivery check"}
+               type="button"
+               onClick={handleTestEmail}
+               disabled={isTesting || recipients.length === 0}
+               className="px-4 py-2.5 bg-indigo-600 text-white border-2 border-slate-900 text-xs font-black uppercase tracking-wider hover:bg-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 transition-all cursor-pointer shadow-[4px_4px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none flex items-center gap-2"
+               title={recipients.length === 0 ? "Please add at least one recipient email below first" : "Trigger diagnostic Resend API delivery check"}
             >
               {isTesting ? (
                 <>
@@ -634,7 +683,7 @@ export function Settings({ onRefresh }: SettingsProps) {
               ) : (
                 <>
                   <Sparkles className="w-4 h-4" />
-                  Test Email (Resend API)
+                  Test Email (Resend)
                 </>
               )}
             </button>
@@ -657,6 +706,86 @@ export function Settings({ onRefresh }: SettingsProps) {
             </div>
           </div>
         )}
+
+        {/* Dynamic Resend Server Connection configuration form */}
+        <div className="border-4 border-slate-900 p-5 bg-slate-50/50 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b-2 border-slate-200 pb-3">
+            <div>
+              <h3 className="text-sm font-black uppercase tracking-tight text-indigo-950 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                Resend API & Sender Settings
+              </h3>
+              <p className="text-[10px] sm:text-[11px] font-bold text-slate-500 mt-0.5 leading-relaxed">
+                Configure your custom Resend API credentials and verified sender domain address directly.
+              </p>
+            </div>
+            <span className="text-indigo-800 font-extrabold uppercase tracking-wide bg-indigo-50 px-2 py-1 border-2 border-indigo-900 rounded text-[9px] sm:text-[10px] shadow-[2px_2px_0px_0px_rgba(79,70,229,1)] self-start md:self-auto">
+              💡 Tip: Resend requires a verified domain to send from, or use 'onboarding@resend.dev' for your own address.
+            </span>
+          </div>
+
+          <form onSubmit={handleSaveResendConfig} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              
+              <div>
+                <label className="block text-[10px] font-black uppercase text-slate-700 mb-1">Resend API Key</label>
+                <input
+                  type="password"
+                  placeholder={resendApiKey === '********' ? '••••••••••••••••' : 're_123456...'}
+                  value={resendApiKey === '********' ? '' : resendApiKey}
+                  onChange={(e) => setResendApiKey(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-slate-900 text-xs font-bold bg-white focus:outline-none focus:bg-indigo-50/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase text-slate-700 mb-1">Verified Sender Email (From)</label>
+                <input
+                  type="text"
+                  placeholder="Productivity App <onboarding@resend.dev>"
+                  value={emailFrom}
+                  onChange={(e) => setEmailFrom(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-slate-900 text-xs font-bold bg-white focus:outline-none focus:bg-indigo-50/20"
+                />
+              </div>
+
+            </div>
+
+            {resendSuccessMsg && (
+              <div className="bg-emerald-50 border-2 border-emerald-900 text-emerald-950 p-2.5 text-xs font-bold shadow-[2px_2px_0px_0px_rgba(16,185,129,1)] flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 flex-shrink-0" />
+                <span>{resendSuccessMsg}</span>
+              </div>
+            )}
+
+            {resendErrorMsg && (
+              <div className="bg-rose-50 border-2 border-rose-900 text-rose-950 p-2.5 text-xs font-bold shadow-[2px_2px_0px_0px_rgba(244,63,94,1)] flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-700 flex-shrink-0" />
+                <span>{resendErrorMsg}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="submit"
+                disabled={isSavingResend}
+                className="px-4 py-2 bg-indigo-600 text-white border-2 border-slate-900 text-xs font-black uppercase hover:bg-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 transition-all cursor-pointer shadow-[3px_3px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none flex items-center gap-1.5"
+              >
+                {isSavingResend ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-4 h-4" />
+                    Apply Resend Configuration
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           

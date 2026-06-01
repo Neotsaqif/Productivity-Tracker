@@ -12,13 +12,22 @@ const JSON_BACKUP_PATH = path.join(process.cwd(), 'productivity.db.json');
 interface DatabaseClient {
   init(): Promise<void>;
   getTasks(): Promise<Task[]>;
-  createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled', scheduleDate: string | null): Promise<Task>;
+  createTask(
+    title: string,
+    category: string,
+    type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled',
+    scheduleDate: string | null,
+    cycleStart?: string | null,
+    cycleEnd?: string | null,
+    status?: 'active' | 'completed' | 'missed'
+  ): Promise<Task>;
   toggleTask(id: number): Promise<Task | null>;
+  updateTask(id: number, fields: Partial<Task>): Promise<Task | null>;
   deleteTask(id: number): Promise<boolean>;
   getLogs(): Promise<DailyLog[]>;
   saveLog(date: string, content: string): Promise<DailyLog>;
   getReviews(): Promise<AIReview[]>;
-  saveReview(date: string, summary: string, score: number): Promise<AIReview>;
+  saveReview(date: string, summary: string, score: number, bonusScore?: number): Promise<AIReview>;
   getAchievements(): Promise<Achievement[]>;
   createAchievement(text: string): Promise<Achievement>;
   deleteAchievementByText(text: string): Promise<void>;
@@ -121,11 +130,22 @@ class JsonDBClient implements DatabaseClient {
       ...t,
       type: t.type || 'daily',
       completedAt: t.completedAt || null,
-      scheduleDate: t.scheduleDate || null
+      scheduleDate: t.scheduleDate || null,
+      cycleStart: t.cycleStart || null,
+      cycleEnd: t.cycleEnd || null,
+      status: t.status || 'active'
     }));
   }
 
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
+  async createTask(
+    title: string,
+    category: string,
+    type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily',
+    scheduleDate: string | null = null,
+    cycleStart: string | null = null,
+    cycleEnd: string | null = null,
+    status: 'active' | 'completed' | 'missed' = 'active'
+  ): Promise<Task> {
     const newTask: Task = {
       id: Date.now() + Math.floor(Math.random() * 1000),
       title,
@@ -135,6 +155,9 @@ class JsonDBClient implements DatabaseClient {
       completedAt: null,
       scheduleDate,
       createdAt: new Date().toISOString(),
+      cycleStart,
+      cycleEnd,
+      status,
     };
     this.data.tasks.push(newTask);
     this.save();
@@ -147,7 +170,31 @@ class JsonDBClient implements DatabaseClient {
     task.completed = !task.completed;
     task.completedAt = task.completed ? new Date().toISOString() : null;
     this.save();
-    return task;
+    return {
+      ...task,
+      type: task.type || 'daily',
+      completedAt: task.completedAt || null,
+      scheduleDate: task.scheduleDate || null,
+      cycleStart: task.cycleStart || null,
+      cycleEnd: task.cycleEnd || null,
+      status: task.status || 'active'
+    };
+  }
+
+  async updateTask(id: number, fields: Partial<Task>): Promise<Task | null> {
+    const task = this.data.tasks.find((t) => t.id === id);
+    if (!task) return null;
+    Object.assign(task, fields);
+    this.save();
+    return {
+      ...task,
+      type: task.type || 'daily',
+      completedAt: task.completedAt || null,
+      scheduleDate: task.scheduleDate || null,
+      cycleStart: task.cycleStart || null,
+      cycleEnd: task.cycleEnd || null,
+      status: task.status || 'active'
+    };
   }
 
   async deleteTask(id: number): Promise<boolean> {
@@ -185,13 +232,14 @@ class JsonDBClient implements DatabaseClient {
     return this.data.ai_reviews;
   }
 
-  async saveReview(date: string, summary: string, score: number): Promise<AIReview> {
+  async saveReview(date: string, summary: string, score: number, bonusScore: number = 0): Promise<AIReview> {
     const existingIndex = this.data.ai_reviews.findIndex((r) => r.date === date);
     const newReview: AIReview = {
       id: existingIndex >= 0 ? this.data.ai_reviews[existingIndex].id : Date.now(),
       date,
       summary,
       score,
+      bonusScore,
     };
 
     if (existingIndex >= 0) {
@@ -429,7 +477,10 @@ class SQLiteDBClient implements DatabaseClient {
         completed INTEGER NOT NULL DEFAULT 0,
         completedAt TEXT,
         scheduleDate TEXT,
-        createdAt TEXT NOT NULL
+        createdAt TEXT NOT NULL,
+        cycleStart TEXT,
+        cycleEnd TEXT,
+        status TEXT DEFAULT 'active'
       );
     `);
 
@@ -449,6 +500,12 @@ class SQLiteDBClient implements DatabaseClient {
         score INTEGER NOT NULL
       );
     `);
+
+    try {
+      this.db.exec(`ALTER TABLE ai_reviews ADD COLUMN bonus_score REAL DEFAULT 0.0`);
+    } catch (e) {
+      // Column probably already exists, safe to ignore
+    }
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS achievements (
@@ -549,12 +606,21 @@ class SQLiteDBClient implements DatabaseClient {
     try {
       this.db.exec("ALTER TABLE tasks ADD COLUMN scheduleDate TEXT");
     } catch (e) {}
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN cycleStart TEXT");
+    } catch (e) {}
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN cycleEnd TEXT");
+    } catch (e) {}
+    try {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'active'");
+    } catch (e) {}
 
     console.log('node:sqlite tables verified/created successfully.');
   }
 
   async getTasks(): Promise<Task[]> {
-    const query = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks ORDER BY id DESC');
+    const query = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks ORDER BY id DESC');
     const rows = query.all();
     return rows.map((row: any) => ({
       id: row.id,
@@ -565,13 +631,24 @@ class SQLiteDBClient implements DatabaseClient {
       completedAt: row.completedAt || null,
       scheduleDate: row.scheduleDate || null,
       createdAt: row.createdAt,
+      cycleStart: row.cycleStart || null,
+      cycleEnd: row.cycleEnd || null,
+      status: (row.status || 'active') as any,
     }));
   }
 
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
+  async createTask(
+    title: string,
+    category: string,
+    type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily',
+    scheduleDate: string | null = null,
+    cycleStart: string | null = null,
+    cycleEnd: string | null = null,
+    status: 'active' | 'completed' | 'missed' = 'active'
+  ): Promise<Task> {
     const createdAt = new Date().toISOString();
-    const stmt = this.db.prepare('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt) VALUES (?, ?, ?, 0, NULL, ?, ?)');
-    const result = stmt.run(title, category, type, scheduleDate, createdAt);
+    const stmt = this.db.prepare('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)');
+    const result = stmt.run(title, category, type, scheduleDate, createdAt, cycleStart, cycleEnd, status);
     return {
       id: Number(result.lastInsertRowid),
       title,
@@ -581,12 +658,15 @@ class SQLiteDBClient implements DatabaseClient {
       completedAt: null,
       scheduleDate,
       createdAt,
+      cycleStart,
+      cycleEnd,
+      status,
     };
   }
 
   async toggleTask(id: number): Promise<Task | null> {
     // Get current state
-    const selectStmt = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks WHERE id = ?');
+    const selectStmt = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks WHERE id = ?');
     const task = selectStmt.get(id);
     if (!task) return null;
 
@@ -604,6 +684,60 @@ class SQLiteDBClient implements DatabaseClient {
       completedAt: nextCompletedAt,
       scheduleDate: task.scheduleDate || null,
       createdAt: task.createdAt,
+      cycleStart: task.cycleStart || null,
+      cycleEnd: task.cycleEnd || null,
+      status: (task.status || 'active') as any,
+    };
+  }
+
+  async updateTask(id: number, fields: Partial<Task>): Promise<Task | null> {
+    const keys = Object.keys(fields);
+    if (keys.length === 0) {
+      const selectStmt = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks WHERE id = ?');
+      const t = selectStmt.get(id);
+      if (!t) return null;
+      return {
+        id: t.id,
+        title: t.title,
+        category: t.category,
+        type: (t.type || 'daily') as any,
+        completed: Boolean(t.completed),
+        completedAt: t.completedAt || null,
+        scheduleDate: t.scheduleDate || null,
+        createdAt: t.createdAt,
+        cycleStart: t.cycleStart || null,
+        cycleEnd: t.cycleEnd || null,
+        status: (t.status || 'active') as any,
+      };
+    }
+
+    const setClauses = keys.map(k => {
+      if (k === 'completed') return 'completed = ?';
+      return `${k} = ?`;
+    }).join(', ');
+    const values = keys.map(k => {
+      if (k === 'completed') return fields[k] ? 1 : 0;
+      return fields[k as keyof Task];
+    });
+
+    const updateStmt = this.db.prepare(`UPDATE tasks SET ${setClauses} WHERE id = ?`);
+    updateStmt.run(...values, id);
+
+    const selectStmt = this.db.prepare('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks WHERE id = ?');
+    const t = selectStmt.get(id);
+    if (!t) return null;
+    return {
+      id: t.id,
+      title: t.title,
+      category: t.category,
+      type: (t.type || 'daily') as any,
+      completed: Boolean(t.completed),
+      completedAt: t.completedAt || null,
+      scheduleDate: t.scheduleDate || null,
+      createdAt: t.createdAt,
+      cycleStart: t.cycleStart || null,
+      cycleEnd: t.cycleEnd || null,
+      status: (t.status || 'active') as any,
     };
   }
 
@@ -642,30 +776,32 @@ class SQLiteDBClient implements DatabaseClient {
   }
 
   async getReviews(): Promise<AIReview[]> {
-    const query = this.db.prepare('SELECT id, date, summary, score FROM ai_reviews');
+    const query = this.db.prepare('SELECT id, date, summary, score, bonus_score FROM ai_reviews');
     return query.all().map((row: any) => ({
       id: row.id,
       date: row.date,
       summary: row.summary,
       score: row.score,
+      bonusScore: row.bonus_score !== undefined && row.bonus_score !== null ? row.bonus_score : 0,
     }));
   }
 
-  async saveReview(date: string, summary: string, score: number): Promise<AIReview> {
+  async saveReview(date: string, summary: string, score: number, bonusScore: number = 0): Promise<AIReview> {
     const stmt = this.db.prepare(`
-      INSERT INTO ai_reviews (date, summary, score)
-      VALUES (?, ?, ?)
-      ON CONFLICT(date) DO UPDATE SET summary = excluded.summary, score = excluded.score
+      INSERT INTO ai_reviews (date, summary, score, bonus_score)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(date) DO UPDATE SET summary = excluded.summary, score = excluded.score, bonus_score = excluded.bonus_score
     `);
-    stmt.run(date, summary, score);
+    stmt.run(date, summary, score, bonusScore);
 
-    const getStmt = this.db.prepare('SELECT id, date, summary, score FROM ai_reviews WHERE date = ?');
+    const getStmt = this.db.prepare('SELECT id, date, summary, score, bonus_score FROM ai_reviews WHERE date = ?');
     const row = getStmt.get(date);
     return {
       id: row.id,
       date: row.date,
       summary: row.summary,
       score: row.score,
+      bonusScore: row.bonus_score !== undefined && row.bonus_score !== null ? row.bonus_score : 0,
     };
   }
 
@@ -1032,7 +1168,10 @@ class MySQLDBClient implements DatabaseClient {
         completed TINYINT(1) NOT NULL DEFAULT 0,
         completedAt VARCHAR(255),
         scheduleDate VARCHAR(255),
-        createdAt VARCHAR(255) NOT NULL
+        createdAt VARCHAR(255) NOT NULL,
+        cycleStart VARCHAR(255),
+        cycleEnd VARCHAR(255),
+        status VARCHAR(255) DEFAULT 'active'
       ) ENGINE=InnoDB;
     `);
 
@@ -1052,6 +1191,12 @@ class MySQLDBClient implements DatabaseClient {
         score INT NOT NULL
       ) ENGINE=InnoDB;
     `);
+
+    try {
+      await this.pool.execute(`ALTER TABLE ai_reviews ADD COLUMN bonus_score REAL DEFAULT 0.0`);
+    } catch (e) {
+      // Column probably already exists, safe to ignore
+    }
 
     await this.pool.execute(`
       CREATE TABLE IF NOT EXISTS achievements (
@@ -1145,20 +1290,29 @@ class MySQLDBClient implements DatabaseClient {
 
     // Ensure tasks new columns exist on older DBs
     try {
-      await this.pool.execute("ALTER TABLE tasks ADD COLUMN type VARCHAR(255) NOT NULL DEFAULT 'daily'");
+       await this.pool.execute("ALTER TABLE tasks ADD COLUMN type VARCHAR(255) NOT NULL DEFAULT 'daily'");
     } catch (e) {}
     try {
-      await this.pool.execute("ALTER TABLE tasks ADD COLUMN completedAt VARCHAR(255)");
+       await this.pool.execute("ALTER TABLE tasks ADD COLUMN completedAt VARCHAR(255)");
     } catch (e) {}
     try {
-      await this.pool.execute("ALTER TABLE tasks ADD COLUMN scheduleDate VARCHAR(255)");
+       await this.pool.execute("ALTER TABLE tasks ADD COLUMN scheduleDate VARCHAR(255)");
+    } catch (e) {}
+    try {
+       await this.pool.execute("ALTER TABLE tasks ADD COLUMN cycleStart VARCHAR(255)");
+    } catch (e) {}
+    try {
+       await this.pool.execute("ALTER TABLE tasks ADD COLUMN cycleEnd VARCHAR(255)");
+    } catch (e) {}
+    try {
+       await this.pool.execute("ALTER TABLE tasks ADD COLUMN status VARCHAR(255) DEFAULT 'active'");
     } catch (e) {}
 
     console.log('MySQL schemas initialized and connected successfully.');
   }
 
   async getTasks(): Promise<Task[]> {
-    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks ORDER BY id DESC');
+    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks ORDER BY id DESC');
     return rows.map((row: any) => ({
       id: row.id,
       title: row.title,
@@ -1168,12 +1322,23 @@ class MySQLDBClient implements DatabaseClient {
       completedAt: row.completedAt || null,
       scheduleDate: row.scheduleDate || null,
       createdAt: row.createdAt,
+      cycleStart: row.cycleStart || null,
+      cycleEnd: row.cycleEnd || null,
+      status: (row.status || 'active') as any,
     }));
   }
 
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null): Promise<Task> {
+  async createTask(
+    title: string,
+    category: string,
+    type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily',
+    scheduleDate: string | null = null,
+    cycleStart: string | null = null,
+    cycleEnd: string | null = null,
+    status: 'active' | 'completed' | 'missed' = 'active'
+  ): Promise<Task> {
     const createdAt = new Date().toISOString();
-    const [result]: any = await this.pool.execute('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt) VALUES (?, ?, ?, 0, NULL, ?, ?)', [title, category, type, scheduleDate, createdAt]);
+    const [result]: any = await this.pool.execute('INSERT INTO tasks (title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)', [title, category, type, scheduleDate, createdAt, cycleStart, cycleEnd, status]);
     return {
       id: Number(result.insertId),
       title,
@@ -1183,11 +1348,14 @@ class MySQLDBClient implements DatabaseClient {
       completedAt: null,
       scheduleDate,
       createdAt,
+      cycleStart,
+      cycleEnd,
+      status,
     };
   }
 
   async toggleTask(id: number): Promise<Task | null> {
-    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt FROM tasks WHERE id = ?', [id]);
+    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks WHERE id = ?', [id]);
     if (!rows || rows.length === 0) return null;
     const task = rows[0];
 
@@ -1204,6 +1372,59 @@ class MySQLDBClient implements DatabaseClient {
       completedAt: nextCompletedAt,
       scheduleDate: task.scheduleDate || null,
       createdAt: task.createdAt,
+      cycleStart: task.cycleStart || null,
+      cycleEnd: task.cycleEnd || null,
+      status: (task.status || 'active') as any,
+    };
+  }
+
+  async updateTask(id: number, fields: Partial<Task>): Promise<Task | null> {
+    const keys = Object.keys(fields);
+    if (keys.length === 0) {
+      const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks WHERE id = ?', [id]);
+      if (!rows || rows.length === 0) return null;
+      const t = rows[0];
+      return {
+        id: t.id,
+        title: t.title,
+        category: t.category,
+        type: (t.type || 'daily') as any,
+        completed: Boolean(t.completed),
+        completedAt: t.completedAt || null,
+        scheduleDate: t.scheduleDate || null,
+        createdAt: t.createdAt,
+        cycleStart: t.cycleStart || null,
+        cycleEnd: t.cycleEnd || null,
+        status: (t.status || 'active') as any,
+      };
+    }
+
+    const setClauses = keys.map(k => {
+      if (k === 'completed') return '`completed` = ?';
+      return `\`${k}\` = ?`;
+    }).join(', ');
+    const values = keys.map(k => {
+      if (k === 'completed') return fields[k] ? 1 : 0;
+      return fields[k as keyof Task];
+    });
+
+    await this.pool.execute(`UPDATE tasks SET ${setClauses} WHERE id = ?`, [...values, id]);
+
+    const [rows]: any = await this.pool.execute('SELECT id, title, category, type, completed, completedAt, scheduleDate, createdAt, cycleStart, cycleEnd, status FROM tasks WHERE id = ?', [id]);
+    if (!rows || rows.length === 0) return null;
+    const t = rows[0];
+    return {
+      id: t.id,
+      title: t.title,
+      category: t.category,
+      type: (t.type || 'daily') as any,
+      completed: Boolean(t.completed),
+      completedAt: t.completedAt || null,
+      scheduleDate: t.scheduleDate || null,
+      createdAt: t.createdAt,
+      cycleStart: t.cycleStart || null,
+      cycleEnd: t.cycleEnd || null,
+      status: (t.status || 'active') as any,
     };
   }
 
@@ -1237,28 +1458,30 @@ class MySQLDBClient implements DatabaseClient {
   }
 
   async getReviews(): Promise<AIReview[]> {
-    const [rows]: any = await this.pool.execute('SELECT id, date, summary, score FROM ai_reviews');
+    const [rows]: any = await this.pool.execute('SELECT id, date, summary, score, bonus_score FROM ai_reviews');
     return rows.map((row: any) => ({
       id: row.id,
       date: row.date,
       summary: row.summary,
       score: row.score,
+      bonusScore: row.bonus_score !== undefined && row.bonus_score !== null ? row.bonus_score : 0,
     }));
   }
 
-  async saveReview(date: string, summary: string, score: number): Promise<AIReview> {
+  async saveReview(date: string, summary: string, score: number, bonusScore: number = 0): Promise<AIReview> {
     await this.pool.execute(`
-      INSERT INTO ai_reviews (date, summary, score)
-      VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE summary = VALUES(summary), score = VALUES(score)
-    `, [date, summary, score]);
+      INSERT INTO ai_reviews (date, summary, score, bonus_score)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE summary = VALUES(summary), score = VALUES(score), bonus_score = VALUES(bonus_score)
+    `, [date, summary, score, bonusScore]);
     
-    const [rows]: any = await this.pool.execute('SELECT id, date, summary, score FROM ai_reviews WHERE date = ?', [date]);
+    const [rows]: any = await this.pool.execute('SELECT id, date, summary, score, bonus_score FROM ai_reviews WHERE date = ?', [date]);
     return {
       id: rows[0].id,
       date: rows[0].date,
       summary: rows[0].summary,
       score: rows[0].score,
+      bonusScore: rows[0].bonus_score !== undefined && rows[0].bonus_score !== null ? rows[0].bonus_score : 0,
     };
   }
 
@@ -1685,15 +1908,24 @@ export class DelegatingDBClient implements DatabaseClient {
 
   // DatabaseClient Delegations
   async getTasks() { return this.activeClient.getTasks(); }
-  async createTask(title: string, category: string, type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily', scheduleDate: string | null = null) {
-    return this.activeClient.createTask(title, category, type, scheduleDate);
+  async createTask(
+    title: string,
+    category: string,
+    type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'scheduled' | 'unscheduled' = 'daily',
+    scheduleDate: string | null = null,
+    cycleStart: string | null = null,
+    cycleEnd: string | null = null,
+    status: 'active' | 'completed' | 'missed' = 'active'
+  ) {
+    return this.activeClient.createTask(title, category, type, scheduleDate, cycleStart, cycleEnd, status);
   }
   async toggleTask(id: number) { return this.activeClient.toggleTask(id); }
+  async updateTask(id: number, fields: Partial<Task>) { return this.activeClient.updateTask(id, fields); }
   async deleteTask(id: number) { return this.activeClient.deleteTask(id); }
   async getLogs() { return this.activeClient.getLogs(); }
   async saveLog(date: string, content: string) { return this.activeClient.saveLog(date, content); }
   async getReviews() { return this.activeClient.getReviews(); }
-  async saveReview(date: string, summary: string, score: number) { return this.activeClient.saveReview(date, summary, score); }
+  async saveReview(date: string, summary: string, score: number, bonusScore: number = 0) { return this.activeClient.saveReview(date, summary, score, bonusScore); }
   async getAchievements() { return this.activeClient.getAchievements(); }
   async createAchievement(text: string) { return this.activeClient.createAchievement(text); }
   async deleteAchievementByText(text: string) { return this.activeClient.deleteAchievementByText(text); }

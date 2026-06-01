@@ -3,7 +3,8 @@ import * as path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { dbStore } from './src/db';
 import { GoogleGenAI, Type } from '@google/genai';
-import { resend } from './src/lib/email/resend';
+import { sendMail } from './src/lib/email/resend';
+import { runTaskCycleCheck, getCycleRange, getTodayString } from './src/lib/tasks-cycle';
 
 
 const app = express();
@@ -38,6 +39,7 @@ app.use(express.json());
 // GET /api/history - Return current states & timeline
 app.get('/api/history', async (req, res) => {
   try {
+    await runTaskCycleCheck();
     const tasks = await dbStore.getTasks();
     const achievements = await dbStore.getAchievements();
     const logs = await dbStore.getLogs();
@@ -59,13 +61,15 @@ app.get('/api/history', async (req, res) => {
 // POST /api/tasks - Create a task
 app.post('/api/tasks', async (req, res) => {
   try {
+    await runTaskCycleCheck();
     const { title, category, type, scheduleDate } = req.body;
     if (!title || !category) {
       return res.status(400).json({ error: 'Title and category are required' });
     }
     const taskType = type || 'daily';
     const sDate = scheduleDate || null;
-    const task = await dbStore.createTask(title, category, taskType, sDate);
+    const { start, end } = getCycleRange(taskType, getTodayString(), sDate);
+    const task = await dbStore.createTask(title, category, taskType, sDate, start, end, 'active');
     res.json(task);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -315,31 +319,78 @@ async function runAiReview(date: string, logContent: string) {
   // Retrieve verifiable evidence for this specific date
   const allAchievements = await dbStore.getAchievements();
   const allActivities = await dbStore.getActivities();
+  const allTasks = await dbStore.getTasks();
 
   const dayAchievements = allAchievements.filter(ach => ach.createdAt.startsWith(date));
   const dayActivities = allActivities.filter(act => act.createdAt.startsWith(date));
 
-  const completedTasks = dayActivities.filter(act => act.type === 'task_completed');
+  // Daily task calculations
+  const dailyTasks = allTasks.filter(t => {
+    return t.type === 'daily' || (t.type === 'scheduled' && t.scheduleDate === date);
+  });
+  const dailyTasksTotal = dailyTasks.length;
+  const dailyTasksCompleted = dailyTasks.filter(t => t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+
+  const dailyCompletionRate = dailyTasksTotal > 0 ? (dailyTasksCompleted / dailyTasksTotal) : 1.0;
+  const taskCompletionScore = dailyCompletionRate * 10;
+
+  // Bonus task completions
+  const weeklyCompletedToday = allTasks.filter(t => t.type === 'weekly' && t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+  const monthlyCompletedToday = allTasks.filter(t => t.type === 'monthly' && t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+  const yearlyCompletedToday = allTasks.filter(t => t.type === 'yearly' && t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+
   const completedRoadmapSteps = dayActivities.filter(act => act.type === 'roadmap_step_completed');
   const completedRoadmapProjects = dayActivities.filter(act => act.type === 'roadmap_project_completed');
 
+  const scheduledCompletedEarly = allTasks.filter(t => {
+    return t.type === 'scheduled' && 
+           t.completed && 
+           t.completedAt && 
+           t.completedAt.startsWith(date) && 
+           t.scheduleDate && 
+           t.scheduleDate > date;
+  }).length;
+
+  // Compute Bonus Score deterministically
+  let bonusCalc = 0;
+  bonusCalc += (weeklyCompletedToday * 0.5);
+  bonusCalc += (monthlyCompletedToday * 1.0);
+  bonusCalc += (yearlyCompletedToday * 2.0);
+  bonusCalc += (completedRoadmapSteps.length * 0.5);
+  bonusCalc += (completedRoadmapProjects.length * 1.0);
+  bonusCalc += (scheduledCompletedEarly * 0.5);
+
+  const bonusScore = Math.min(5.0, bonusCalc);
+
   const achievementsStr = dayAchievements.map(a => `- Achievement Unlocked: ${a.text}`).join('\n') || 'None';
-  const tasksStr = completedTasks.map(t => `- System Verified Task: ${t.title}`).join('\n') || 'None';
-  const stepsStr = completedRoadmapSteps.map(s => `- System Verified Roadmap Step: ${s.title}`).join('\n') || 'None';
-  const projectsStr = completedRoadmapProjects.map(p => `- System Verified Roadmap Project Complete: ${p.title}`).join('\n') || 'None';
+  const tasksStr = dailyTasks.map(t => `- [${t.completed ? 'COMPLETED' : 'INCOMPLETE'}] ${t.title}`).join('\n') || 'None';
+  const stepsStr = completedRoadmapSteps.map(s => `- Completed Roadmap Step: ${s.title}`).join('\n') || 'None';
+  const projectsStr = completedRoadmapProjects.map(p => `- Completed Roadmap Project: ${p.title}`).join('\n') || 'None';
 
-  // Create full prompt for productivity reviewer
+  const statsInput = {
+    daily: {
+      total: dailyTasksTotal,
+      completed: dailyTasksCompleted
+    },
+    weeklyCompletedToday,
+    monthlyCompletedToday,
+    yearlyCompletedToday,
+    roadmapCompletedToday: completedRoadmapSteps.length + completedRoadmapProjects.length,
+    scheduledCompletedEarly,
+    dailyLog: logContent
+  };
+
   const prompt = `You are a strict, objective, and neutral productivity reviewer. 
-Analyze the user's daily check-in log and contrast it with system-tracked evidence for: ${date}.
+Analyze the user's daily check-in log and contrast it with system-tracked evidence for date: ${date}.
 
---- SYSTEM TRACKED COLD EVIDENCE EVIDENCE ---
-Completed Tasks completed today:
-${tasksStr}
+--- CRITICAL SYSTEM TRACKED DATA (JSON FORMAT) ---
+${JSON.stringify(statsInput, null, 2)}
 
-Completed Roadmap Steps completed today:
+--- OTHER SYSTEM EVENTS ---
+Completed Roadmap Steps today:
 ${stepsStr}
 
-Completed Roadmap Projects completed today:
+Completed Roadmap Projects today:
 ${projectsStr}
 
 Achievements unlocked today:
@@ -350,12 +401,15 @@ ${achievementsStr}
 
 --- REVIEW DIRECTIVES & AUDIT RULES ---
 1. Contrast claims in the check-in log writeup with actual system-tracked activities and achievements completed today.
-2. Emphasize tracking evidence: looking at both explicit claims/logs and cold verifiable data.
-3. Call out "unsubstantiated claims" in your Gaps/Missing list (e.g. if the user says they completed "making a database" or "drawing class", but no matching Tasks or Roadmap Steps were completed today).
-4. Populate your "detected_progress" array with all actual verifiable completed tasks, steps, projects, and achievements.
-5. Reward completed work strictly. Active milestones and hard task completion weights highly in grading.
-6. A score of 10 must be exceptionally hard to get (only reserve for massive, highly structured outputs). Average work should score 5-7. If they did literally nothing, score appropriately lower.
-Your review must be returned as valid structured JSON.`;
+2. Emphasize tracking evidence: check for "unsubstantiated claims" where the user claims to have done something but no matching evidence was found.
+3. You must evaluate the quality of the daily check-in log (checkinScore) from 0 to 10 based on:
+   - Effort (is the log detailed and descriptive?)
+   - Consistency (did they mention continuous actions?)
+   - Meaningful work (was actual, non-trivial progress discussed?)
+   - Reflection quality (acknowledged failures, identified gaps, or analyzed bottlenecks)
+4. Populate 'summary', 'wins', 'improvements', and 'tomorrowFocus' arrays.
+5. Provide the 'checkinScore' as an integer or float from 0 to 10 representing the check-in log validation.
+Your response must be returned as valid structured JSON according to the schema.`;
 
   const response = await ai.models.generateContent({
     model: 'gemini-3.1-flash-lite',
@@ -367,29 +421,29 @@ Your review must be returned as valid structured JSON.`;
         properties: {
           summary: {
             type: Type.STRING,
-            description: 'A brief, realistic summary outlining what was completed, skipped, or failed to achieve. Point out any unsubstantiated claims from log writeup.',
+            description: 'A brief, realistic summary outlining what was completed, skipped, or failed to achieve. Highlight verified vs unverified claims.',
           },
-          positives: {
+          wins: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'Literal concrete accomplishments or focus highlights. Avoid empty general praise.',
+            description: 'List of verified wins or successes today.',
           },
-          missing: {
+          improvements: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'Constructive list of unaccomplished aims, gaps, unsubstantiated claims, or areas for focus.',
+            description: 'List of constructive improvements, gaps, or bottlenecks.',
           },
-          detected_progress: {
+          tomorrowFocus: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'The list of verifiably achieved tasks, roadmap steps, projects, or achievements.',
+            description: 'Key items to focus on tomorrow based on today\'s achievements and reflections.',
           },
-          score: {
-            type: Type.INTEGER,
-            description: 'The strict Productivity Score from 1 to 10 (neutral assessment).',
-          },
+          checkinScore: {
+            type: Type.NUMBER,
+            description: 'The Quality Rating of the written check-in progress log on a scale from 0 to 10 (0=empty or meaningless, 10=exceptional detail, self-critique, and reflection).',
+          }
         },
-        required: ['summary', 'positives', 'missing', 'detected_progress', 'score'],
+        required: ['summary', 'wins', 'improvements', 'tomorrowFocus', 'checkinScore'],
       },
     },
   });
@@ -402,23 +456,39 @@ Your review must be returned as valid structured JSON.`;
   // Parse response structure
   const rawJson = JSON.parse(responseText.trim());
 
+  const checkinScore = Math.max(0, Math.min(10, Number(rawJson.checkinScore) || 5));
+  // Daily Score Formula: (taskCompletionScore * 0.7) + (checkinScore * 0.3)
+  const dailyScore = parseFloat(((taskCompletionScore * 0.7) + (checkinScore * 0.3)).toFixed(1));
+
   // Convert to Markdown representation to persist in SQL-compatible db schema 'summary' column
   const formattedSummary = `### Summary
 ${rawJson.summary}
 
-### Detected Progress
-${rawJson.detected_progress.map((dp: string) => `- ${dp}`).join('\n')}
+### Daily Responsibilities Breakdown
+- Daily tasks completed: ${dailyTasksCompleted}/${dailyTasksTotal}
+- Task completion rate: ${Math.round(dailyCompletionRate * 100)}% -> ${(taskCompletionScore).toFixed(1)}/10 points (70% weight)
+- Check-in evaluation: ${(checkinScore).toFixed(1)}/10 points (30% weight)
+- **DAILY SCORE**: ${dailyScore.toFixed(1)} / 10
 
-### Positive Highlights
-${rawJson.positives.map((p: string) => `- ${p}`).join('\n')}
+### Bonus Progress Earned (+${bonusScore.toFixed(1)} / 5.0)
+- Weekly tasks completed today: ${weeklyCompletedToday} (+${(weeklyCompletedToday * 0.5).toFixed(1)} bonus)
+- Monthly tasks completed today: ${monthlyCompletedToday} (+${(monthlyCompletedToday * 1.0).toFixed(1)} bonus)
+- Yearly tasks completed today: ${yearlyCompletedToday} (+${(yearlyCompletedToday * 2.0).toFixed(1)} bonus)
+- Roadmap steps completed: ${completedRoadmapSteps.length} (+${(completedRoadmapSteps.length * 0.5).toFixed(1)} bonus)
+- Roadmap projects completed: ${completedRoadmapProjects.length} (+${(completedRoadmapProjects.length * 1.0).toFixed(1)} bonus)
+- Pre-scheduled tasks completed early: ${scheduledCompletedEarly} (+${(scheduledCompletedEarly * 0.5).toFixed(1)} bonus)
+
+### Wins Today
+${rawJson.wins.map((w: string) => `- ${w}`).join('\n') || 'None'}
 
 ### Areas for Focus / Gaps
-${rawJson.missing.map((m: string) => `- ${m}`).join('\n')}`;
+${rawJson.improvements.map((m: string) => `- ${m}`).join('\n') || 'None'}
 
-  const score = parseInt(rawJson.score, 10) || 5;
+### Focus List for Tomorrow
+${rawJson.tomorrowFocus.map((f: string) => `- ${f}`).join('\n') || 'None'}`;
 
   // Save/Overwrite review on table
-  const savedReview = dbStore.saveReview(date, formattedSummary, score);
+  const savedReview = await dbStore.saveReview(date, formattedSummary, dailyScore, bonusScore);
   return savedReview;
 }
 
@@ -452,21 +522,57 @@ async function generateEmailReport(date: string, logContent: string) {
     // Retrieve verifiable tracked activities for context
     const allAchievements = await dbStore.getAchievements();
     const allActivities = await dbStore.getActivities();
+    const allTasks = await dbStore.getTasks();
 
     const dayAchievements = allAchievements.filter(ach => ach.createdAt.startsWith(date));
     const dayActivities = allActivities.filter(act => act.createdAt.startsWith(date));
 
-    const completedTasks = dayActivities.filter(act => act.type === 'task_completed');
+    // Daily task calculations
+    const dailyTasks = allTasks.filter(t => {
+      return t.type === 'daily' || (t.type === 'scheduled' && t.scheduleDate === date);
+    });
+    const dailyTasksTotal = dailyTasks.length;
+    const dailyTasksCompleted = dailyTasks.filter(t => t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+
+    const dailyCompletionRate = dailyTasksTotal > 0 ? (dailyTasksCompleted / dailyTasksTotal) : 1.0;
+    const taskCompletionScore = dailyCompletionRate * 10;
+
+    // Bonus task completions
+    const weeklyCompletedToday = allTasks.filter(t => t.type === 'weekly' && t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+    const monthlyCompletedToday = allTasks.filter(t => t.type === 'monthly' && t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+    const yearlyCompletedToday = allTasks.filter(t => t.type === 'yearly' && t.completed && t.completedAt && t.completedAt.startsWith(date)).length;
+
     const completedRoadmapSteps = dayActivities.filter(act => act.type === 'roadmap_step_completed');
+    const completedRoadmapProjects = dayActivities.filter(act => act.type === 'roadmap_project_completed');
+
+    const scheduledCompletedEarly = allTasks.filter(t => {
+      return t.type === 'scheduled' && 
+             t.completed && 
+             t.completedAt && 
+             t.completedAt.startsWith(date) && 
+             t.scheduleDate && 
+             t.scheduleDate > date;
+    }).length;
+
+    // Compute Bonus Score deterministically
+    let bonusCalc = 0;
+    bonusCalc += (weeklyCompletedToday * 0.5);
+    bonusCalc += (monthlyCompletedToday * 1.0);
+    bonusCalc += (yearlyCompletedToday * 2.0);
+    bonusCalc += (completedRoadmapSteps.length * 0.5);
+    bonusCalc += (completedRoadmapProjects.length * 1.0);
+    bonusCalc += (scheduledCompletedEarly * 0.5);
+
+    const bonusScore = Math.min(5.0, bonusCalc);
 
     const achievementsStr = dayAchievements.map(a => `- ${a.text}`).join('\n') || 'None';
-    const tasksStr = completedTasks.map(t => `- ${t.title}`).join('\n') || 'None';
+    const tasksStr = dailyTasks.map(t => `- [${t.completed ? 'COMPLETED' : 'INCOMPLETE'}] ${t.title}`).join('\n') || 'None';
     const stepsStr = completedRoadmapSteps.map(s => `- ${s.title}`).join('\n') || 'None';
 
     const prompt = `You are a strict, objective, and neutral productivity coach.
 Analyze the user's progress for today (${date}) and outline a motivating, structured daily email progress report.
 Contrast the user's check-in log with the system verified raw evidence:
-- Verifiable Tasks completed:
+- Verifiable Daily Tasks:
 ${tasksStr}
 - Verifiable Roadmap steps completed:
 ${stepsStr}
@@ -504,9 +610,9 @@ Your output must be returned as valid structured JSON according to the schema.`;
               items: { type: Type.STRING },
               description: 'Constructive suggestions for improvement, highlighting gaps between logs and verified activities.'
             },
-            score: {
-              type: Type.INTEGER,
-              description: 'A productivity rating from 1 to 10 based on accomplishments.'
+            checkinScore: {
+              type: Type.NUMBER,
+              description: 'A score from 0 to 10 evaluating the quality, depth, and honesty of the check-in log reflection.'
             },
             motivational_message: {
               type: Type.STRING,
@@ -518,7 +624,7 @@ Your output must be returned as valid structured JSON according to the schema.`;
               description: 'Tactical next focus tasks for tomorrow.'
             }
           },
-          required: ['subject', 'summary', 'wins', 'improvements', 'score', 'motivational_message', 'tomorrow_focus']
+          required: ['subject', 'summary', 'wins', 'improvements', 'checkinScore', 'motivational_message', 'tomorrow_focus']
         }
       }
     });
@@ -527,8 +633,22 @@ Your output must be returned as valid structured JSON according to the schema.`;
       throw new Error('Received empty response from Gemini API.');
     }
 
-    const report = JSON.parse(response.text.trim());
-    return report;
+    const reportJson = JSON.parse(response.text.trim());
+    
+    const checkinScore = Math.max(0, Math.min(10, Number(reportJson.checkinScore) || 5));
+    const dailyScore = parseFloat(((taskCompletionScore * 0.7) + (checkinScore * 0.3)).toFixed(1));
+
+    return {
+      subject: reportJson.subject || `Progress Report for ${date}`,
+      summary: reportJson.summary || '',
+      wins: reportJson.wins || [],
+      improvements: reportJson.improvements || [],
+      dailyScore,
+      bonusScore,
+      rate: Math.round(dailyCompletionRate * 100),
+      motivational_message: reportJson.motivational_message || '',
+      tomorrow_focus: reportJson.tomorrowFocus || reportJson.tomorrow_focus || []
+    };
   } catch (err: any) {
     console.error('Error generating AI email report, leveraging fallback:', err.message);
     return {
@@ -536,7 +656,9 @@ Your output must be returned as valid structured JSON according to the schema.`;
       summary: `Check-in details submitted successfully. Log writeup says: "${logContent}"`,
       wins: ['User successfully submitted manual daily check-in log.'],
       improvements: ['Verify that automated AI integrations are fully configured.'],
-      score: 5,
+      dailyScore: 5.0,
+      bonusScore: 0.0,
+      rate: 100,
       motivational_message: 'Keep showing up! Logging your days is a powerful ritual of discipline. Keep logging consistent progress to build long term momentum.',
       tomorrow_focus: ['Review daily goals', 'Continue habits check-in loop']
     };
@@ -562,7 +684,9 @@ async function processCheckInEmailFlow(date: string, logContent: string) {
 
     const report = await generateEmailReport(date, logContent);
 
-    const score = report.score ?? 5;
+    const dailyScore = report.dailyScore ?? 5.0;
+    const bonusScore = report.bonusScore ?? 0.0;
+    const rate = report.rate ?? 100;
     const summary = report.summary ?? '';
     const wins = report.wins ?? [];
     const improvements = report.improvements ?? [];
@@ -576,13 +700,15 @@ async function processCheckInEmailFlow(date: string, logContent: string) {
     const htmlContent = `<!DOCTYPE html>
 <html>
 <body style="font-family: sans-serif; padding: 20px;">
-  <h2>Daily Progress Report - Score: ${score}/10</h2>
-  <p><strong>Summary:</strong> ${summary}</p>
+  <h2>Daily Progress Report - Daily Score: ${dailyScore}/10</h2>
+  <p><strong>Bonus Score:</strong> +${bonusScore.toFixed(1)}</p>
+  <p><strong>Task Completion Rate:</strong> ${rate}%</p>
+  <p><strong>Summary / Reflection Analysis:</strong> ${summary}</p>
   <h3>Wins Today</h3>
   <ul>
     ${winsHtml || '<li>None recorded</li>'}
   </ul>
-  <h3>Areas of Improvement</h3>
+  <h3>Areas of Improvement / Bottlenecks</h3>
   <ul>
     ${improvementsHtml || '<li>Keep working consistently</li>'}
   </ul>
@@ -594,28 +720,25 @@ async function processCheckInEmailFlow(date: string, logContent: string) {
 </body>
 </html>`;
 
-    const textContent = `Daily Progress Report - Score: ${score}/10\n\n` +
-      `Summary: ${summary}\n\n` +
+    const textContent = `Daily Progress Report - Daily Score: ${dailyScore}/10 (+${bonusScore.toFixed(1)})\n\n` +
+      `Task Completion Rate: ${rate}%\n` +
+      `Summary / Reflection Analysis: ${summary}\n\n` +
       `Wins Today:\n${wins.map((w: string) => `- ${w}`).join('\n') || 'None'}\n\n` +
-      `Areas of Improvement:\n${improvements.map((i: string) => `- ${i}`).join('\n') || 'None'}\n\n` +
+      `Areas of Improvement / Bottlenecks:\n${improvements.map((i: string) => `- ${i}`).join('\n') || 'None'}\n\n` +
       `Coach's Message: ${coachMessage}\n\n` +
       `Tomorrow's Focus:\n${tomorrowFocus.map((tf: string) => `- ${tf}`).join('\n') || 'None'}`;
 
     try {
-      if (!process.env.RESEND_API_KEY) {
-        throw new Error('RESEND_API_KEY environment variable is not configured. Please define RESEND_API_KEY in environment secrets.');
-      }
-      
-      const EMAIL_FROM = process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
       const failedToSend: string[] = [];
       const errors: string[] = [];
 
+      const subjectLine = `[Daily Audit] ${date} | Score: ${dailyScore}/10 (+${bonusScore.toFixed(1)})`;
+
       for (const recipient of validatedRecipients) {
         try {
-          await resend.emails.send({
-            from: EMAIL_FROM,
+          await sendMail({
             to: recipient,
-            subject: report.subject || `Progress Report for ${date}`,
+            subject: subjectLine,
             html: htmlContent,
             text: textContent
           });
@@ -636,7 +759,7 @@ async function processCheckInEmailFlow(date: string, logContent: string) {
           errors.join('; ')
         );
       } else {
-        console.log('Daily check-in email sent successfully via Resend API.');
+        console.log('Daily check-in email sent successfully via Resend.');
       }
     } catch (sendErr: any) {
       console.error('Resend transaction failed: storing in queue. Error:', sendErr.message);
@@ -697,12 +820,6 @@ app.post('/api/email/retry', async (req, res) => {
     let successCount = 0;
     let failedCount = 0;
     
-    if (pending.length > 0 && !process.env.RESEND_API_KEY) {
-      throw new Error('RESEND_API_KEY environment variable is not configured. Please define RESEND_API_KEY in environment secrets.');
-    }
-    
-    const EMAIL_FROM = process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
-    
     for (const email of pending) {
       try {
         const failedRecipients: string[] = [];
@@ -710,8 +827,7 @@ app.post('/api/email/retry', async (req, res) => {
         
         for (const recipient of email.to) {
           try {
-            await resend.emails.send({
-              from: EMAIL_FROM,
+            await sendMail({
               to: recipient,
               subject: email.subject,
               html: email.htmlContent,
@@ -751,6 +867,39 @@ app.post('/api/email/retry', async (req, res) => {
   }
 });
 
+// GET /api/email/resend-config
+app.get('/api/email/resend-config', async (req, res) => {
+  try {
+    const customApiKey = await dbStore.getSettings('resend_api_key').catch(() => null);
+    const customFrom = await dbStore.getSettings('email_from').catch(() => null);
+
+    res.json({
+      resend_api_key: (customApiKey && customApiKey.value && customApiKey.value[0]) ? '********' : '',
+      email_from: (customFrom && customFrom.value && customFrom.value[0]) || '',
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/email/resend-config
+app.post('/api/email/resend-config', async (req, res) => {
+  try {
+    const { resend_api_key, email_from } = req.body;
+
+    if (resend_api_key !== undefined && resend_api_key !== '********') {
+      await dbStore.saveSettings('resend_api_key', [resend_api_key]);
+    }
+    if (email_from !== undefined) {
+      await dbStore.saveSettings('email_from', [email_from]);
+    }
+
+    res.json({ success: true, message: 'Resend configuration saved successfully!' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // POST /api/email/test
 app.post('/api/email/test', async (req, res) => {
   try {
@@ -764,8 +913,14 @@ app.post('/api/email/test', async (req, res) => {
       return res.status(400).json({ error: 'No valid recipient email addresses found in your configuration.' });
     }
 
-    if (!process.env.RESEND_API_KEY) {
-      return res.status(400).json({ error: 'RESEND_API_KEY environment variable is not configured. Please define RESEND_API_KEY in environment secrets.' });
+    const customApiKey = await dbStore.getSettings('resend_api_key').catch(() => null);
+    const customFrom = await dbStore.getSettings('email_from').catch(() => null);
+
+    const resendApiKey = (customApiKey && customApiKey.value && customApiKey.value[0]) || process.env.RESEND_API_KEY || '';
+    const emailFrom = (customFrom && customFrom.value && customFrom.value[0]) || process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
+
+    if (!resendApiKey) {
+      return res.status(400).json({ error: 'Resend API Key is not configured. Please define it in environment secrets or enter it in App Settings below first.' });
     }
 
     const testSubject = 'AI Progress Email System - Diagnostic Resend API Test';
@@ -781,7 +936,7 @@ app.post('/api/email/test', async (req, res) => {
     </p>
     <p style="font-size: 12px; font-weight: 600; color: #475569; background-color: #f1f5f9; padding: 12px; border-left: 4px solid #4f46e5; font-family: monospace;">
       Provider: Resend Email API<br>
-      From Address: ${process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>"}<br>
+      From Address: ${emailFrom}<br>
       Timestamp: ${new Date().toISOString()}
     </p>
     <p style="font-size: 13px; font-weight: 500; color: #334155;">
@@ -800,19 +955,17 @@ app.post('/api/email/test', async (req, res) => {
       `Congratulations! Your Resend API integration is working perfectly.\n\n` +
       `Diagnostic Details:\n` +
       `- Provider: Resend Email API\n` +
-      `- From Address: ${process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>"}\n` +
+      `- From Address: ${emailFrom}\n` +
       `- Time: ${new Date().toISOString()}\n\n` +
       `You will now receive automated summaries generated by Google Gemini AI directly to this inbox whenever you submit a check-in page log!`;
 
-    const EMAIL_FROM = process.env.EMAIL_FROM || "Productivity App <onboarding@resend.dev>";
-    
     const failedToSend: string[] = [];
     const errors: string[] = [];
 
     for (const recipient of validatedRecipients) {
       try {
-        await resend.emails.send({
-          from: EMAIL_FROM,
+        await sendMail({
+          from: emailFrom,
           to: recipient,
           subject: testSubject,
           html: htmlContent,
@@ -867,6 +1020,18 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server starting up successfully! Ingress routed via http://0.0.0.0:${PORT}`);
+    
+    // Run initial task cycles check on boot
+    runTaskCycleCheck().catch((err) => {
+      console.error('Task System: Initial task cycle check failed on boot:', err);
+    });
+
+    // Schedule hourly task cycle check
+    setInterval(() => {
+      runTaskCycleCheck().catch((err) => {
+        console.error('Task System: Background periodic cycle check failed:', err);
+      });
+    }, 3600000); // 1 hour
   });
 }
 

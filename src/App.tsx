@@ -239,6 +239,7 @@ export default function App() {
                 achievements={achievements}
                 logs={logs}
                 activities={activities}
+                reviews={reviews}
                 onNavigate={(tab) => setActiveTab(tab as TabType)}
               />
             )}

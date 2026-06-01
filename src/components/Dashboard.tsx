@@ -1,16 +1,17 @@
 import React from 'react';
-import { Task, Achievement, DailyLog, Activity } from '../types';
-import { CheckCircle2, Flame, Award, Calendar, ChevronRight, CheckSquare, ListTodo, MapPin, Milestone, Star } from 'lucide-react';
+import { Task, Achievement, DailyLog, Activity, AIReview } from '../types';
+import { CheckCircle2, Flame, Award, Calendar, ChevronRight, CheckSquare, ListTodo, MapPin, Milestone, Star, Sparkles } from 'lucide-react';
 
 interface DashboardProps {
   tasks: Task[];
   achievements: Achievement[];
   logs: DailyLog[];
   activities: Activity[];
+  reviews: AIReview[];
   onNavigate: (tab: string) => void;
 }
 
-export function Dashboard({ tasks, achievements, logs, activities, onNavigate }: DashboardProps) {
+export function Dashboard({ tasks, achievements, logs, activities, reviews, onNavigate }: DashboardProps) {
   // Today's Date formatted nicely
   const todayStr = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -102,6 +103,138 @@ export function Dashboard({ tasks, achievements, logs, activities, onNavigate }:
           </button>
         </div>
       </div>
+
+      {/* Dynamic Daily Score + Bonus Score Panel */}
+      {(() => {
+        const todayKey = new Date().toISOString().split('T')[0];
+        const todayReview = (reviews || []).find(r => r.date === todayKey);
+        const latestReview = todayReview || (reviews && reviews.length > 0 ? [...reviews].sort((a,b) => b.date.localeCompare(a.date))[0] : null);
+
+        const dailyTasks = tasks.filter(t => {
+          return t.type === 'daily' || (t.type === 'scheduled' && t.scheduleDate === todayKey);
+        });
+        const dailyTasksTotal = dailyTasks.length;
+        const dailyTasksCompleted = dailyTasks.filter(t => t.completed && t.completedAt && t.completedAt.startsWith(todayKey)).length;
+
+        const weeklyCompletedToday = tasks.filter(t => t.type === 'weekly' && t.completed && t.completedAt && t.completedAt.startsWith(todayKey));
+        const monthlyCompletedToday = tasks.filter(t => t.type === 'monthly' && t.completed && t.completedAt && t.completedAt.startsWith(todayKey));
+        const yearlyCompletedToday = tasks.filter(t => t.type === 'yearly' && t.completed && t.completedAt && t.completedAt.startsWith(todayKey));
+        const completedRoadmapSteps = (activities || []).filter(act => act.type === 'roadmap_step_completed' && act.createdAt && act.createdAt.startsWith(todayKey));
+        const completedRoadmapProjects = (activities || []).filter(act => act.type === 'roadmap_project_completed' && act.createdAt && act.createdAt.startsWith(todayKey));
+        const scheduledCompletedEarly = tasks.filter(t => {
+          return t.type === 'scheduled' && 
+                 t.completed && 
+                 t.completedAt && 
+                 t.completedAt.startsWith(todayKey) && 
+                 t.scheduleDate && 
+                 t.scheduleDate > todayKey;
+        });
+
+        const bonusItems = [
+          { label: 'Weekly Goal Done', count: weeklyCompletedToday.length, points: '+0.5' },
+          { label: 'Monthly Goal Done', count: monthlyCompletedToday.length, points: '+1.0' },
+          { label: 'Yearly Goal Done', count: yearlyCompletedToday.length, points: '+2.0' },
+          { label: 'Roadmap Step Done', count: completedRoadmapSteps.length, points: '+0.5' },
+          { label: 'Roadmap Project Done', count: completedRoadmapProjects.length, points: '+1.0' },
+          { label: 'Scheduled Task Early', count: scheduledCompletedEarly.length, points: '+0.5' },
+        ].filter(item => item.count > 0);
+
+        return (
+          <div className="bg-slate-900 text-white border-2 border-slate-900 rounded-none p-6 md:p-8 shadow-[6px_6px_0px_0px_rgba(15,23,42,1)] grid grid-cols-1 md:grid-cols-3 gap-8">
+            
+            {/* Panel 1: Primary Daily Score */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-[10px] uppercase font-black tracking-widest text-indigo-400">
+                <Sparkles className="w-4 h-4 text-indigo-400 fill-indigo-400" />
+                <span>Today's Daily Audit</span>
+              </div>
+              
+              <div className="flex items-baseline gap-2">
+                <span className="text-5xl font-black tracking-tighter">
+                  {latestReview ? latestReview.score.toFixed(1) : '---'}
+                </span>
+                <span className="text-slate-400 text-sm font-black uppercase">/ 10 Score</span>
+              </div>
+
+              <p className="text-slate-400 text-xs font-semibold leading-relaxed">
+                {latestReview 
+                  ? `Calculated on ${latestReview.date}. Focuses purely on daily tasks and log reflections.`
+                  : 'Write a daily check-in and request an AI audit to calculate your performance index.'}
+              </p>
+              
+              {/* Progress bar of Daily task completion */}
+              <div className="space-y-2">
+                <div className="flex justify-between text-[10px] font-black uppercase text-slate-400">
+                  <span>Today's Due Progress</span>
+                  <span>{dailyTasksCompleted} / {dailyTasksTotal} Tasks</span>
+                </div>
+                <div className="w-full bg-slate-800 h-2 rounded-none border border-slate-700 overflow-hidden">
+                  <div 
+                    className="bg-indigo-500 h-full" 
+                    style={{ width: `${dailyTasksTotal > 0 ? (dailyTasksCompleted / dailyTasksTotal) * 100 : 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Panel 2: Bonus Progress Score */}
+            <div className="space-y-4 border-t-2 border-slate-800 md:border-t-0 md:border-l-2 md:border-r-2 md:px-8 border-dashed border-slate-700">
+              <div className="flex items-center gap-2 text-[10px] uppercase font-black tracking-widest text-emerald-400">
+                <Star className="w-4 h-4 text-emerald-400 fill-emerald-400" />
+                <span>Bonus Achievements</span>
+              </div>
+
+              <div className="flex items-baseline gap-2">
+                <span className="text-5xl font-black text-emerald-400 tracking-tighter">
+                  +{latestReview && typeof latestReview.bonusScore === 'number' ? latestReview.bonusScore.toFixed(1) : '0.0'}
+                </span>
+                <span className="text-slate-400 text-sm font-black uppercase">Extra Progress</span>
+              </div>
+
+              <p className="text-slate-400 text-xs font-semibold leading-relaxed">
+                Measures strategic weekly/monthly goals, roadmap projects, and early completions. Cap: +5.0 maximum.
+              </p>
+
+              <button 
+                onClick={() => onNavigate('checkin')}
+                className="flex items-center gap-1.5 text-xs text-white hover:text-indigo-400 font-extrabold pb-0.5 border-b border-white hover:border-indigo-400 uppercase tracking-widest transition-colors cursor-pointer"
+              >
+                Go to Daily Log Review &rarr;
+              </button>
+            </div>
+
+            {/* Panel 3: Today's Verified Accomplishments Feed */}
+            <div className="space-y-4">
+              <div className="text-[10px] uppercase font-black tracking-widest text-slate-400">
+                Today's Verified Events
+              </div>
+
+              {bonusItems.length === 0 ? (
+                <div className="bg-slate-950 p-4 border border-slate-800 flex items-center justify-center text-center h-[120px]">
+                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider italic">
+                    No extra goals completed today. Complete a Weekly, Monthly, or Roadmap task to earn dynamic bonus points!
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2 h-[120px] overflow-y-auto pr-1">
+                  {bonusItems.map((item, index) => (
+                    <div key={index} className="flex items-center justify-between bg-slate-950 p-2.5 border border-slate-800 shadow-[1px_1px_0px_0px_rgba(255,255,255,0.1)]">
+                      <div className="flex items-center gap-2">
+                        <span className="text-emerald-400 text-xs font-black">✓</span>
+                        <span className="text-xs text-slate-300 font-black uppercase tracking-tight">{item.label}</span>
+                      </div>
+                      <span className="text-[10px] font-black px-1.5 py-0.5 bg-emerald-950 border border-emerald-900 text-emerald-400">
+                        {item.points}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
+        );
+      })()}
 
       {/* Middle Section: Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">

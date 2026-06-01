@@ -7,6 +7,9 @@ export interface Task {
   completedAt: string | null;
   scheduleDate: string | null; // YYYY-MM-DD
   createdAt: string;
+  cycleStart?: string | null;   // start of current cycle
+  cycleEnd?: string | null;     // end of current cycle
+  status?: 'active' | 'completed' | 'missed';
 }
 
 export interface DailyLog {
@@ -20,6 +23,7 @@ export interface AIReview {
   date: string; // YYYY-MM-DD
   summary: string;
   score: number; // 1-10
+  bonusScore?: number;
 }
 
 export interface Achievement {

@@ -225,21 +225,38 @@ export function DailyCheckin({ logs, reviews, onSaveCheckin, onTriggerReview }: 
             </div>
           ) : existingReview ? (
             <div className="space-y-5">
-              {/* Score Badge */}
-              <div className="flex items-center gap-4 bg-white rounded-none p-4 border-2 border-indigo-900 shadow-[3px_3px_0px_0px_rgba(49,46,129,1)]">
-                <div className="text-center bg-indigo-900 text-white rounded-none border-2 border-indigo-950 py-2.5 px-3 min-w-[70px]">
-                  <div className="text-3xl font-black">{String(existingReview.score).padStart(2, '0')}</div>
-                  <div className="text-[8px] font-black uppercase tracking-widest text-indigo-300">Score / 10</div>
+              {/* Scores Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Daily Score Badge */}
+                <div className="flex items-center gap-3 bg-white rounded-none p-3 border-2 border-indigo-900 shadow-[3px_3px_0px_0px_rgba(49,46,129,1)]">
+                  <div className="text-center bg-indigo-900 text-white rounded-none border-2 border-indigo-950 py-2.5 px-3 min-w-[65px]">
+                    <div className="text-2xl font-black">
+                      {typeof existingReview.score === 'number' ? existingReview.score.toFixed(1) : existingReview.score}
+                    </div>
+                    <div className="text-[8px] font-black uppercase tracking-widest text-indigo-300">Daily / 10</div>
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black text-indigo-950 uppercase tracking-tight mb-0.5">
+                      Daily Score
+                    </h4>
+                    <p className="text-[10px] font-bold text-slate-500 leading-tight">Focuses strictly on today's due Tasks and Log quality.</p>
+                  </div>
                 </div>
-                <div>
-                  <h4 className="text-xs font-black text-indigo-950 uppercase tracking-tight">
-                    {existingReview.score >= 8 
-                      ? 'Exceptional Execution Day' 
-                      : existingReview.score >= 6 
-                      ? 'Solid Balanced Progress' 
-                      : 'Gap Identified / Active Focus Needed'}
-                  </h4>
-                  <p className="text-[11px] font-semibold text-indigo-800/80 mt-1">Realistic assessment calculated on verified tasks and honest daily reflection logs.</p>
+
+                {/* Bonus Score Badge */}
+                <div className="flex items-center gap-3 bg-white rounded-none p-3 border-2 border-emerald-900 shadow-[3px_3px_0px_0px_rgba(6,78,59,1)]">
+                  <div className="text-center bg-emerald-950 text-white rounded-none border-2 border-emerald-900 py-2.5 px-3 min-w-[65px]">
+                    <div className="text-2xl font-black">
+                      +{typeof existingReview.bonusScore === 'number' ? existingReview.bonusScore.toFixed(1) : '0.0'}
+                    </div>
+                    <div className="text-[8px] font-black uppercase tracking-widest text-emerald-300">Bonus</div>
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black text-emerald-950 uppercase tracking-tight mb-0.5">
+                      Bonus Score
+                    </h4>
+                    <p className="text-[10px] font-bold text-emerald-800 leading-tight">Rewards long-term & early-scheduled progress (+5.0 max).</p>
+                  </div>
                 </div>
               </div>
 
