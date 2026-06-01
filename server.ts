@@ -4,11 +4,15 @@ import { createServer as createViteServer } from 'vite';
 import { dbStore } from './src/db';
 import { GoogleGenAI, Type } from '@google/genai';
 import { sendMail } from './src/lib/email/resend';
-import { runTaskCycleCheck, getCycleRange, getTodayString } from './src/lib/tasks-cycle';
+import { runTaskCycleCheck, getCycleRange, getTodayString, forceResetCycle, setDateOverride, getDateOverride } from './src/lib/tasks-cycle';
 
 
 const app = express();
 const PORT = 3000;
+
+// Simple in-memory storage for AI Title Generation
+const generationRateLimitLogs: number[] = [];
+const generationCache = new Map<string, { title: string; timestamp: number }>();
 
 // Lazy initialization of Gemini API Client
 let aiClient: GoogleGenAI | null = null;
@@ -35,6 +39,76 @@ app.use(express.json());
 // ----------------------------------------------------
 // API ENDPOINTS
 // ----------------------------------------------------
+
+// POST /api/tasks/generate-title - AI Title Generator
+app.post('/api/tasks/generate-title', async (req, res) => {
+  try {
+    const { title } = req.body;
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+    if (title.length > 200) return res.status(400).json({ error: 'Title too long' });
+    
+    // Rate Limiting (10 per minute)
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    while (generationRateLimitLogs.length > 0 && generationRateLimitLogs[0] < oneMinuteAgo) {
+      generationRateLimitLogs.shift();
+    }
+    if (generationRateLimitLogs.length >= 10) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+    generationRateLimitLogs.push(now);
+
+    const normalizedTitle = title.trim().toLowerCase();
+    
+    // Cache Check
+    const cached = generationCache.get(normalizedTitle);
+    if (cached && (now - cached.timestamp) < 30 * 24 * 60 * 60 * 1000) {
+      return res.json({ title: cached.title });
+    }
+
+    // Call Gemini
+    const ai = getGeminiClient();
+    const prompt = `You rewrite task titles.
+Rules:
+* Return only the improved title.
+* No explanations.
+* No quotes.
+* No markdown.
+* Fix spelling mistakes.
+* Improve readability.
+* Keep original meaning.
+* Keep title concise.
+* Prefer 3-6 words.
+* Use title case when appropriate.
+* Do not add unnecessary details.
+* Preserve important specific words.
+
+Input: ${title}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.1-flash-lite',
+      contents: prompt,
+      config: {
+        temperature: 0.2,
+        maxOutputTokens: 20
+      }
+    });
+
+    const improvedTitle = response.text?.trim();
+    if (!improvedTitle) throw new Error('AI could not generate better title');
+
+    // Save to Cache
+    generationCache.set(normalizedTitle, { title: improvedTitle, timestamp: now });
+
+    res.json({ title: improvedTitle });
+  } catch (error: any) {
+    console.error('AI Title Gen Error:', error);
+    if (error.status === 'RESOURCE_EXHAUSTED' || error.statusCode === 429 || error.code === 429) {
+      return res.status(429).json({ error: 'Unable to generate title.' });
+    }
+    res.status(500).json({ error: 'Unable to generate title.' });
+  }
+});
 
 // GET /api/history - Return current states & timeline
 app.get('/api/history', async (req, res) => {
@@ -71,6 +145,33 @@ app.post('/api/tasks', async (req, res) => {
     const { start, end } = getCycleRange(taskType, getTodayString(), sDate);
     const task = await dbStore.createTask(title, category, taskType, sDate, start, end, 'active');
     res.json(task);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/settings/date-override', async (req, res) => {
+  try {
+    const { date } = req.body;
+    setDateOverride(date || null);
+    res.json({ success: true, date: getDateOverride() });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/settings/date-override', async (req, res) => {
+  res.json({ date: getDateOverride() });
+});
+
+app.post('/api/tasks/cycle/reset', async (req, res) => {
+  try {
+    const { type } = req.body;
+    if (!type || !['daily', 'weekly', 'monthly', 'yearly', 'all'].includes(type)) {
+      return res.status(400).json({ error: 'Valid cycle type required' });
+    }
+    await forceResetCycle(type);
+    res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -734,7 +835,8 @@ async function processCheckInEmailFlow(date: string, logContent: string) {
 
       const subjectLine = `[Daily Audit] ${date} | Score: ${dailyScore}/10 (+${bonusScore.toFixed(1)})`;
 
-      for (const recipient of validatedRecipients) {
+      for (let i = 0; i < validatedRecipients.length; i++) {
+        const recipient = validatedRecipients[i];
         try {
           await sendMail({
             to: recipient,
@@ -747,6 +849,9 @@ async function processCheckInEmailFlow(date: string, logContent: string) {
           console.error(`Resend send failed for ${recipient}. Error: ${sendErr.message}`);
           failedToSend.push(recipient);
           errors.push(`${recipient}: ${sendErr.message}`);
+        }
+        if (i < validatedRecipients.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
 
@@ -825,7 +930,8 @@ app.post('/api/email/retry', async (req, res) => {
         const failedRecipients: string[] = [];
         const errors: string[] = [];
         
-        for (const recipient of email.to) {
+        for (let i = 0; i < email.to.length; i++) {
+          const recipient = email.to[i];
           try {
             await sendMail({
               to: recipient,
@@ -836,6 +942,9 @@ app.post('/api/email/retry', async (req, res) => {
           } catch (err: any) {
             failedRecipients.push(recipient);
             errors.push(`${recipient}: ${err.message}`);
+          }
+          if (i < email.to.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
         

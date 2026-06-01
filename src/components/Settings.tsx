@@ -38,6 +38,10 @@ export function Settings({ onRefresh }: SettingsProps) {
   const [isSavingRecipients, setIsSavingRecipients] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
 
+  // Date Override State
+  const [dateOverride, setDateOverride] = useState<string | null>(null);
+  const [tempOverride, setTempOverride] = useState<string>('');
+
   // Resend API Configuration State
   const [resendApiKey, setResendApiKey] = useState('');
   const [emailFrom, setEmailFrom] = useState('');
@@ -51,6 +55,7 @@ export function Settings({ onRefresh }: SettingsProps) {
     fetchEmailSettings();
     fetchFailedEmails();
     fetchResendConfig();
+    fetchDateOverride();
   }, []);
 
   const fetchResendConfig = async () => {
@@ -65,6 +70,56 @@ export function Settings({ onRefresh }: SettingsProps) {
       console.error('Failed to fetch Resend config:', err);
     }
   };
+
+  const fetchDateOverride = async () => {
+    try {
+      const res = await fetch('/api/settings/date-override');
+      if (res.ok) {
+        const data = await res.json();
+        setDateOverride(data.date);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch date override:', err);
+    }
+  };
+
+  const handleSetOverride = async (date: string) => {
+    if (!date) return;
+    try {
+        const res = await fetch('/api/settings/date-override', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ date })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            setDateOverride(data.date);
+            alert('Date override set to ' + data.date);
+        } else {
+          throw new Error('Failed to set');
+        }
+    } catch (e: any) {
+        alert('Error: ' + e.message);
+    }
+  }
+
+  const handleClearOverride = async () => {
+    try {
+        const res = await fetch('/api/settings/date-override', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ date: null })
+        });
+        if (res.ok) {
+            setDateOverride(null);
+            alert('Date override cleared');
+        } else {
+          throw new Error('Failed to clear');
+        }
+    } catch (e: any) {
+        alert('Error: ' + e.message);
+    }
+  }
 
   const handleSaveResendConfig = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -647,6 +702,90 @@ export function Settings({ onRefresh }: SettingsProps) {
           </div>
         </div>
 
+      </div>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* DATE OVERRIDE MANAGEMENT PANEL */}
+      {/* ----------------------------------------------------------------- */}
+      <div className="border-4 border-slate-900 bg-white p-6 md:p-8 shadow-[6px_6px_0px_0px_rgba(15,23,42,1)] space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">
+              Date Override Management
+            </h2>
+            <p className="text-xs md:text-sm font-semibold text-slate-600 max-w-xl mt-1 leading-relaxed">
+              Simulate a different current date for task system logic.
+            </p>
+          </div>
+          {dateOverride && (
+             <span className="text-rose-700 font-black uppercase text-xs bg-rose-50 border-2 border-rose-900 px-3 py-1">
+               Active: {dateOverride}
+             </span>
+           )}
+        </div>
+        
+        <div className="flex items-center gap-4">
+           <input 
+              type="date"
+              className="px-4 py-2 border-2 border-slate-900 text-xs font-bold bg-slate-50 focus:outline-none"
+              onChange={(e) => setTempOverride(e.target.value)}
+           />
+           <button 
+              onClick={() => handleSetOverride(tempOverride)}
+              className="px-4 py-2 bg-indigo-600 text-white text-xs font-black uppercase tracking-wider border-2 border-slate-900 hover:bg-indigo-500 transition-all cursor-pointer shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]"
+           >
+              Set Override
+           </button>
+           {dateOverride && (
+             <button
+               onClick={handleClearOverride}
+               className="px-4 py-2 bg-rose-600 text-white text-xs font-black uppercase tracking-wider border-2 border-slate-900 hover:bg-rose-500 transition-all cursor-pointer shadow-[2px_2px_0px_0px_rgba(15,23,42,1)]"
+             >
+                Clear Override
+             </button>
+           )}
+        </div>
+      </div>
+
+      {/* ----------------------------------------------------------------- */}
+      {/* TASK CYCLE MANAGEMENT PANEL */}
+      {/* ----------------------------------------------------------------- */}
+      <div className="border-4 border-slate-900 bg-white p-6 md:p-8 shadow-[6px_6px_0px_0px_rgba(15,23,42,1)] space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">
+              Task Cycle Management
+            </h2>
+            <p className="text-xs md:text-sm font-semibold text-slate-600 max-w-xl mt-1 leading-relaxed">
+              Manually force a reset of task cycles if tasks are stuck or require an immediate update.
+            </p>
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          {(['daily', 'weekly', 'monthly', 'yearly', 'all'] as const).map((type) => (
+            <button
+              key={type}
+              onClick={async () => {
+                if (!confirm(`Are you sure you want to force reset all ${type} cycles? This will mark current tasks as expired and regenerate new ones.`)) return;
+                try {
+                  const res = await fetch('/api/tasks/cycle/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ type })
+                  });
+                  if (res.ok) alert(`Successfully reset ${type} cycle tasks`);
+                  else throw new Error('Reset failed');
+                } catch (e: any) {
+                  alert('Error: ' + e.message);
+                }
+              }}
+              className="px-4 py-3 bg-amber-500 text-slate-950 text-xs font-black uppercase tracking-wider border-2 border-slate-900 hover:bg-amber-400 transition-all cursor-pointer shadow-[3px_3px_0px_0px_rgba(15,23,42,1)] active:translate-y-0.5 active:translate-x-0.5 active:shadow-none"
+            >
+              Reset {type}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* ----------------------------------------------------------------- */}

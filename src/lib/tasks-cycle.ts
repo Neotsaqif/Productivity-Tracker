@@ -1,7 +1,18 @@
 import { dbStore } from '../db';
 import { Task } from '../types';
 
+let dateOverride: string | null = null;
+
+export function setDateOverride(date: string | null) {
+  dateOverride = date;
+}
+
+export function getDateOverride(): string | null {
+  return dateOverride;
+}
+
 export function getTodayString(): string {
+  if (dateOverride) return dateOverride;
   const d = new Date();
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -186,6 +197,49 @@ export async function runTaskCycleCheck() {
     }
   }
 
+
   await saveLastCycleCheckDate(today);
   console.log(`Task cycles up to date. Saved last run date as ${today}.`);
+}
+
+export async function forceResetCycle(type: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'all') {
+  const tasks = await dbStore.getTasks();
+  const today = getTodayString();
+  
+  // 1. Identify active recurring task definitions
+  const activeDefinitions = new Map<string, Pick<Task, 'title' | 'category' | 'type' | 'scheduleDate'>>();
+  
+  for (const task of tasks) {
+    if (task.status === 'active' && (type === 'all' || task.type === type)) {
+      // Mark old task as expired (missed)
+      await dbStore.updateTask(task.id, { status: 'missed' });
+
+      // Store definition to recreate
+      if (['daily', 'weekly', 'monthly', 'yearly'].includes(task.type)) {
+        const defKey = `${task.title}_${task.category}_${task.type}`;
+        if (!activeDefinitions.has(defKey)) {
+          activeDefinitions.set(defKey, {
+            title: task.title,
+            category: task.category,
+            type: task.type,
+            scheduleDate: task.scheduleDate
+          });
+        }
+      }
+    }
+  }
+
+  // 2. Recreate tasks based on definitions for the current cycle
+  for (const def of activeDefinitions.values()) {
+    const { start, end } = getCycleRange(def.type, today, def.scheduleDate || null);
+    await dbStore.createTask(
+      def.title,
+      def.category,
+      def.type,
+      def.scheduleDate, // Replicate original scheduleDate if any
+      start,
+      end,
+      'active'
+    );
+  }
 }

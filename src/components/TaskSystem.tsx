@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Task } from '../types.js';
-import { Plus, Trash2, Clock, Calendar, CheckSquare, ListTodo, Archive } from 'lucide-react';
+import { Plus, Trash2, Clock, Calendar, CheckSquare, ListTodo, Archive, Zap } from 'lucide-react';
 
 interface TaskSystemProps {
   tasks: Task[];
@@ -33,6 +33,7 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
 
   const [scheduleDate, setScheduleDate] = useState(getTodayString());
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   
   // Custom scope filters as specified by user visibility logic
   const [activeView, setActiveView] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'scheduled' | 'unscheduled' | 'history'>('all');
@@ -54,6 +55,31 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
       console.error(err);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleGenerateTitle = async () => {
+    if (!title.trim()) {
+      alert('Please enter a title first');
+      return;
+    }
+    setIsGenerating(true);
+    try {
+      const res = await fetch('/api/tasks/generate-title', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Unable to generate title.');
+      }
+      const data = await res.json();
+      setTitle(data.title);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -113,7 +139,18 @@ export function TaskSystem({ tasks, onAddTask, onToggleTask, onDeleteTask }: Tas
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Title */}
           <div>
-            <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Task Title</label>
+            <div className="flex justify-between items-center mb-2">
+              <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400">Task Title</label>
+              <button
+                type="button"
+                onClick={handleGenerateTitle}
+                disabled={isGenerating || !title.trim()}
+                className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-800 disabled:text-slate-400 transition-colors"
+              >
+                <Zap className="w-3 h-3" />
+                {isGenerating ? 'Generating...' : 'Generate Text'}
+              </button>
+            </div>
             <input
               type="text"
               required
